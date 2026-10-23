@@ -1,0 +1,600 @@
+// Staff layout of the journey engine (`layout: staff`, see
+// app/views/journey-engine/_page.html): internal case-work services.
+//
+//   .app-staff              body class: a wider page so tables have room
+//   .app-staff-header       GOV.UK blue header with the service name and the
+//                           account toggle, whose grey panel holds the menu
+//                           (app/views/includes/staff-header.html)
+//   .app-staff-page-header  heading with a button to its right
+//   .app-staff-cards        the dashboard's count cards, each a link
+//   .app-staff-search       search box with its button
+//   .app-staff-filter       the records table's filter (a details)
+//   .app-staff-table--sortable  column headings that sort the table
+//   .app-timeline           audit history (the MOJ timeline)
+
+$app-staff-max-width: 1440px;
+// Below this width the service name and the account toggle no longer fit
+// on one line (they need about 905px with this service's name), so the
+// toggle moves to a row of its own
+$app-staff-header-stack: 960px;
+$app-staff-black: govuk-colour('black');
+// The GOV.UK header's blue (the refreshed brand)
+$app-staff-header-colour: govuk-functional-colour(brand);
+$app-staff-grey: govuk-colour('black', $variant: 'tint-95');
+
+// The GOV.UK width container at 1440px: the same gutters as on any page,
+// centred only once the window is wider than the page and its gutters (the
+// 960px container's own rule would drop the gutters from 1020px)
+.app-staff .govuk-width-container {
+  @include govuk-width-container($app-staff-max-width);
+}
+
+// Question pages keep the reading width of any GOV.UK service (two thirds
+// of 960px) however wide the page is; tables and records use the full width
+.app-staff .govuk-grid-column-two-thirds {
+  max-width: 640px;
+}
+
+// -------------------------------------------------------------- Header
+
+.app-staff-header {
+  position: relative;
+  background: $app-staff-header-colour;
+  color: govuk-colour('white');
+  @include govuk-font($size: 19);
+}
+
+.app-staff-header__container {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: space-between;
+  min-height: 80px;
+}
+
+.app-staff-header__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: govuk-spacing(3);
+  padding: govuk-spacing(3) 0;
+  margin-right: govuk-spacing(4);
+  color: govuk-colour('white');
+  text-decoration: none;
+
+  &:link,
+  &:visited {
+    color: govuk-colour('white');
+  }
+
+  &:hover .app-staff-header__service {
+    text-decoration: underline;
+    text-decoration-thickness: 3px;
+  }
+
+  &:focus {
+    @include govuk-focused-text;
+  }
+}
+
+// The crown at the GOV.UK header's size (32 by 30px)
+.app-staff-header__crown {
+  width: 32px;
+  height: auto;
+  flex-shrink: 0;
+  fill: currentcolor;
+}
+
+.app-staff-header__service {
+  @include govuk-font($size: 24);
+}
+
+.app-staff-header__controls {
+  display: flex;
+  align-items: stretch;
+}
+
+.app-staff-header__item {
+  display: flex;
+  align-items: stretch;
+}
+
+.app-staff-header__item--account {
+  position: relative;
+}
+
+.app-staff-header__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: govuk-spacing(3);
+  margin: 0;
+  padding: govuk-spacing(3) govuk-spacing(4);
+  border: 0;
+  background: transparent;
+  color: govuk-colour('white');
+  text-align: left;
+  cursor: pointer;
+  @include govuk-font($size: 19);
+
+  &[hidden] {
+    display: none;
+  }
+
+  &:focus {
+    @include govuk-focused-text;
+  }
+}
+
+// The white rule to the left of the account toggle, as in the HMPPS header
+.app-staff-header__item--account .app-staff-header__toggle {
+  border-left: 1px solid govuk-colour('white');
+  margin: govuk-spacing(3) 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.app-staff-header__chevron {
+  flex-shrink: 0;
+  transition: transform 0.1s;
+}
+
+.app-staff-header__person {
+  flex-shrink: 0;
+}
+
+.app-staff-header__account-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.app-staff-header__account-organisation {
+  @include govuk-font($size: 16);
+}
+
+// Open: the toggle turns grey with a blue rule under its text, like a tab
+.app-staff-header__item--open {
+  .app-staff-header__toggle {
+    margin: 0;
+    padding-top: govuk-spacing(3);
+    padding-bottom: govuk-spacing(3);
+    border-color: transparent;
+    background: $app-staff-grey;
+    color: govuk-colour('blue', $variant: 'shade-50');
+    box-shadow: inset 0 -5px 0 govuk-colour('blue', $variant: 'shade-50');
+  }
+
+  .app-staff-header__chevron {
+    transform: rotate(180deg);
+  }
+}
+
+.app-staff-header__panel {
+  padding: govuk-spacing(4);
+  background: $app-staff-grey;
+  color: $app-staff-black;
+
+  &[hidden] {
+    display: none;
+  }
+}
+
+// With JavaScript the panels drop down over the page; without it they sit
+// open in the header's flow so their links stay reachable
+.govuk-frontend-supported {
+  .app-staff-header__panel {
+    position: absolute;
+    z-index: 100;
+    top: 100%;
+  }
+
+  // At least as wide as the toggle, lined up with its right-hand edge
+  .app-staff-header__panel--account {
+    right: 0;
+    width: max-content;
+    min-width: 100%;
+  }
+}
+
+// Between the service's links and the account's
+.app-staff-header__rule {
+  margin: govuk-spacing(4) 0;
+  border: 0;
+  border-top: 1px solid govuk-colour('black', $variant: 'tint-80');
+}
+
+.app-staff-header__links {
+  margin-bottom: 0;
+
+  li {
+    margin-bottom: govuk-spacing(3);
+  }
+
+  li:last-child {
+    margin-bottom: 0;
+  }
+
+  .govuk-link {
+    font-weight: $govuk-font-weight-bold;
+  }
+}
+
+// Stacked: the toggle on its own row under the service name, lined up
+// with the crown, with no rule to its left
+@media (max-width: #{$app-staff-header-stack - 1px}) {
+  .app-staff-header__controls {
+    width: 100%;
+  }
+
+  .app-staff-header__item--account .app-staff-header__toggle {
+    border-left: 0;
+    padding-left: 0;
+  }
+
+  .app-staff-header__item--open .app-staff-header__toggle {
+    padding-left: govuk-spacing(3);
+  }
+
+  // The toggle sits at the left here, so its panel opens from the left
+  .govuk-frontend-supported .app-staff-header__panel--account {
+    right: auto;
+    left: 0;
+  }
+}
+
+@include govuk-media-query($until: tablet) {
+  .app-staff-header__service {
+    @include govuk-font($size: 19);
+  }
+}
+
+// ------------------------------------------------------ Page furniture
+
+// The button sits level with the heading's first line: their text shares a
+// baseline, however many lines the heading wraps onto
+.app-staff-page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: govuk-spacing(3) govuk-spacing(6);
+  margin-bottom: govuk-spacing(4);
+
+  .govuk-heading-xl,
+  .govuk-heading-l {
+    flex: 1 1 auto;
+    max-width: 20em;
+    margin-bottom: 0;
+  }
+
+  .govuk-button {
+    margin-bottom: 0;
+  }
+
+  // From desktop the heading keeps to two thirds of the page and the
+  // button stays at the right-hand edge of the last third, however long
+  // the heading
+  @include govuk-media-query($from: desktop) {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    align-items: start;
+
+    .govuk-heading-xl,
+    .govuk-heading-l {
+      max-width: none;
+    }
+
+    .govuk-button {
+      justify-self: end;
+    }
+  }
+}
+
+// A record's page: the reference and its status tag, centred on one line
+.app-staff-record__heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: govuk-spacing(2) govuk-spacing(3);
+
+  .govuk-tag {
+    @include govuk-font($size: 19);
+  }
+}
+
+.app-staff-cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: govuk-spacing(3);
+  margin: 0 0 govuk-spacing(8);
+  padding: 0;
+  list-style: none;
+
+  // Four side by side from desktop, two by two on tablets, stacked on
+  // phones
+  @include govuk-media-query($from: tablet) {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  @include govuk-media-query($from: desktop) {
+    grid-template-columns: repeat(4, 1fr);
+    gap: govuk-spacing(4);
+  }
+}
+
+.app-staff-card {
+  display: flex;
+}
+
+// The whole card is the link to the records it counts. Its contents sit
+// at the top, so the numbers line up across a row however many lines the
+// labels wrap to; the grid stretches every card to the tallest in its row.
+.app-staff-card__link {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: govuk-spacing(3);
+  border: 1px solid govuk-colour('black', $variant: 'tint-80');
+  border-bottom: 5px solid govuk-colour('blue');
+  background: $app-staff-grey;
+  color: $app-staff-black;
+  text-align: center;
+  text-decoration: none;
+
+  @include govuk-media-query($from: desktop) {
+    padding: govuk-spacing(4);
+  }
+
+  &:link,
+  &:visited {
+    color: $app-staff-black;
+  }
+
+  &:hover {
+    border-bottom-color: govuk-colour('blue', $variant: 'shade-50');
+    background: govuk-colour('black', $variant: 'tint-80');
+
+    .app-staff-card__label {
+      text-decoration: underline;
+      text-decoration-thickness: 3px;
+    }
+  }
+
+  &:focus {
+    @include govuk-focused-text;
+  }
+}
+
+.app-staff-card__count {
+  display: block;
+  margin-bottom: govuk-spacing(2);
+  @include govuk-font($size: 48, $weight: bold);
+}
+
+.app-staff-card__label {
+  color: govuk-colour('blue');
+  @include govuk-font($size: 19, $weight: bold);
+  text-decoration: underline;
+  text-underline-offset: 0.1578em;
+}
+
+.app-staff-card__link:focus .app-staff-card__label {
+  color: $app-staff-black;
+  text-decoration: none;
+}
+
+.app-staff-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: govuk-spacing(4);
+  margin-bottom: govuk-spacing(6);
+
+  .govuk-form-group {
+    margin-bottom: 0;
+  }
+}
+
+.app-staff-search__query {
+  flex: 1 1 30em;
+  max-width: 50em;
+}
+
+.app-staff-search__box {
+  display: flex;
+
+  .govuk-input {
+    flex: 1 1 auto;
+  }
+}
+
+.app-staff-search__button {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: govuk-colour('blue');
+  color: govuk-colour('white');
+  cursor: pointer;
+
+  svg {
+    display: block;
+    margin: auto;
+  }
+
+  &:hover {
+    background: govuk-colour('blue', $variant: 'shade-25');
+  }
+
+  &:focus {
+    @include govuk-focused-text;
+  }
+}
+
+.app-staff-table {
+  .govuk-table__cell,
+  .govuk-table__header {
+    vertical-align: middle;
+  }
+
+  .govuk-tag {
+    max-width: none;
+    white-space: nowrap;
+  }
+}
+
+// Sortable column headings (after the MOJ sortable table): the heading is
+// a link, with an arrow for the way the table is sorted, or a pair of them
+// on a column it is not sorted by
+.app-staff-table--sortable {
+  .app-sort-link {
+    display: inline-flex;
+    align-items: center;
+    gap: govuk-spacing(1);
+    @include govuk-link-common;
+    @include govuk-link-style-no-visited-state;
+    font-weight: $govuk-font-weight-bold;
+
+    &::after {
+      content: '';
+      flex-shrink: 0;
+      width: 0.6em;
+      height: 1em;
+      background: currentcolor;
+      // Both arrows
+      clip-path: polygon(
+        50% 0,
+        100% 40%,
+        0 40%,
+        50% 0,
+        50% 100%,
+        0 60%,
+        100% 60%,
+        50% 100%
+      );
+    }
+  }
+
+  [aria-sort='ascending'] .app-sort-link::after {
+    clip-path: polygon(50% 20%, 100% 70%, 0 70%);
+  }
+
+  [aria-sort='descending'] .app-sort-link::after {
+    clip-path: polygon(0 30%, 100% 30%, 50% 80%);
+  }
+}
+
+// The records table's filter: its checkbox groups side by side from tablet
+.app-staff-filter {
+  margin-bottom: govuk-spacing(4);
+
+  .govuk-details__text {
+    padding-top: govuk-spacing(3);
+  }
+}
+
+.app-staff-filter__groups {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0 govuk-spacing(6);
+
+  @include govuk-media-query($from: tablet) {
+    grid-template-columns: repeat(3, auto);
+    justify-content: start;
+  }
+}
+
+// Under the records table: "Showing 1 to 10 of 14 records" with the
+// pagination to its right (wrapping below it on narrow screens)
+.app-staff-table-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: govuk-spacing(2) govuk-spacing(6);
+  margin-bottom: govuk-spacing(6);
+
+  .app-staff-table-footer__count,
+  .govuk-pagination {
+    margin-bottom: 0;
+  }
+}
+
+// Clear filters, beside the count of what the filters show
+.app-staff-table-footer__clear {
+  margin-left: govuk-spacing(2);
+}
+
+.app-staff-record__map {
+  max-width: 720px;
+  margin-bottom: govuk-spacing(8);
+}
+
+// ------------------------------------------------------------ Timeline
+
+// The MOJ timeline (design-patterns.service.justice.gov.uk/components/
+// timeline), its styles ported from @ministryofjustice/frontend 11: a
+// brand-blue rule down the left with a tick by each entry, the title and
+// "by" line on one line, the date under them.
+.app-timeline {
+  position: relative;
+  margin-bottom: govuk-spacing(4);
+  overflow: hidden;
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: govuk-spacing(2);
+    left: 0;
+    width: 5px;
+    height: 100%;
+    background-color: govuk-functional-colour(brand);
+  }
+}
+
+.app-timeline__item {
+  position: relative;
+  padding-bottom: govuk-spacing(6);
+  padding-left: govuk-spacing(4);
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: govuk-spacing(2);
+    left: 0;
+    width: 15px;
+    height: 5px;
+    background-color: govuk-functional-colour(brand);
+  }
+}
+
+.app-timeline__title {
+  margin: 0;
+  @include govuk-font($size: 19, $weight: bold);
+}
+
+// Who did it, on the line under the title, set like the date: their name,
+// then their email in brackets, which breaks anywhere rather than pushing
+// past the column
+.app-timeline__byline {
+  margin: govuk-spacing(1) 0 0;
+  color: govuk-functional-colour(secondary-text);
+  @include govuk-font($size: 16);
+}
+
+.app-timeline__email {
+  overflow-wrap: anywhere;
+}
+
+.app-timeline__date {
+  margin-top: govuk-spacing(1);
+  margin-bottom: 0;
+  color: govuk-functional-colour(secondary-text);
+  @include govuk-font($size: 16);
+}
+
+.app-timeline__description {
+  margin-top: govuk-spacing(4);
+  @include govuk-font($size: 19);
+}

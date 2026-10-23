@@ -1,0 +1,179 @@
+# Flow and logic for the example "Renew a juggling licence" journey: a
+# service the user signs in to, with the mock GOV.UK One Login or Government
+# Gateway pages shared from content/shared/.
+#
+# Signing in is mocked by app/lib/mock-sign-in.js, spread into this
+# journey's hooks (app/lib/renew-juggling-licence/hooks.js): any email, user
+# ID and password are accepted, and the account lands in the session as
+# `account`. While it is there the header shows Sign out (`signedIn` below).
+
+id: renew-juggling-licence
+name: Renew a juggling licence
+serviceName: Renew a juggling licence
+start: start
+summaryPage: check-your-answers
+signedIn: { key: account, isSet: true }
+
+homepage:
+  family: example
+  status: in-progress
+  title: Renew a juggling licence (example with sign in)
+  description: >-
+    Shows the shared mock sign in pages: the user picks GOV.UK One Login or
+    Government Gateway, signs in or creates sign in details, and the header
+    shows Sign out from then on. The research participant's name, from the
+    footer's Participant details box, stands in for the account holder's.
+  changesTitle: What to look at
+  changes:
+    - The sign in pages come from content/shared/one-login/ and content/shared/government-gateway/
+    - Signing in is mocked by app/lib/mock-sign-in.js
+    - The screen wall folds each sign in service into a group of its own
+
+session:
+  - signInMethod
+  - renewalLength
+
+preview:
+  data:
+    signInMethod: one-login
+    signInEmail: sam.smith@example.com
+    securityCodeMethod: sms
+    mobileNumber: '07700 900000'
+    governmentGatewayName: Sam Smith
+    governmentGatewayUserId: 43 93 78 15 57 40
+    account:
+      email: sam.smith@example.com
+      fullName: Sam Smith
+    renewalLength: one-year
+  # The header shows Sign out only from here on, though the sample account
+  # is set on every page
+  signedInFrom:
+    - renewal-length
+
+pages:
+  - id: start
+    next: sign-in-method
+
+  - id: sign-in-method
+    field: sign-in-method
+    sessionKey: signInMethod
+    next:
+      # Leaves for the other journey: a `goto` starting with / is an exit,
+      # drawn as a dashed box on the tools page
+      - when: { key: signInMethod, equals: no-licence }
+        goto: /apply-juggling-licence/start
+      - when: { key: signInMethod, equals: government-gateway }
+        goto: government-gateway-sign-in
+      - goto: one-login-start
+
+  # Mock GOV.UK One Login (content/shared/one-login/). "Sign in" leads to the
+  # email page; the "Create your GOV.UK One Login" button links to
+  # one-login-create-email.
+  - id: one-login-start
+    shared: one-login
+    next: one-login-email
+
+  - id: one-login-email
+    shared: one-login
+    next: one-login-password
+
+  - id: one-login-password
+    shared: one-login
+    handler: custom # signs in, see app/lib/mock-sign-in.js
+    next: renewal-length
+
+  - id: one-login-create-email
+    shared: one-login
+    next: one-login-check-email
+
+  - id: one-login-check-email
+    shared: one-login
+    guard: { key: signInEmail, isSet: true, redirect: one-login-create-email }
+    next: one-login-create-password
+
+  - id: one-login-create-password
+    shared: one-login
+    guard: { key: signInEmail, isSet: true, redirect: one-login-create-email }
+    next: one-login-security-codes
+
+  - id: one-login-security-codes
+    shared: one-login
+    guard: { key: signInEmail, isSet: true, redirect: one-login-create-email }
+    next:
+      - when: { key: securityCodeMethod, equals: sms }
+        goto: one-login-phone-number
+      - goto: one-login-authenticator
+
+  - id: one-login-phone-number
+    shared: one-login
+    guard: { key: securityCodeMethod, equals: sms, redirect: one-login-security-codes }
+    next: one-login-check-phone
+
+  - id: one-login-check-phone
+    shared: one-login
+    guard: { key: mobileNumber, isSet: true, redirect: one-login-phone-number }
+    next: one-login-created
+
+  - id: one-login-authenticator
+    shared: one-login
+    guard: { key: signInEmail, isSet: true, redirect: one-login-create-email }
+    next: one-login-created
+
+  - id: one-login-created
+    shared: one-login
+    guard: { key: signInEmail, isSet: true, redirect: one-login-create-email }
+    handler: custom # signs in with the new account, see app/lib/mock-sign-in.js
+    next: renewal-length
+
+  # Mock Government Gateway (content/shared/government-gateway/). "Create
+  # sign in details" on the sign in page links to government-gateway-email.
+  - id: government-gateway-sign-in
+    shared: government-gateway
+    handler: custom # signs in, see app/lib/mock-sign-in.js
+    next: renewal-length
+
+  - id: government-gateway-email
+    shared: government-gateway
+    next: government-gateway-confirm-email
+
+  - id: government-gateway-confirm-email
+    shared: government-gateway
+    guard: { key: signInEmail, isSet: true, redirect: government-gateway-email }
+    next: government-gateway-email-confirmed
+
+  - id: government-gateway-email-confirmed
+    shared: government-gateway
+    guard: { key: signInEmail, isSet: true, redirect: government-gateway-email }
+    next: government-gateway-name
+
+  - id: government-gateway-name
+    shared: government-gateway
+    guard: { key: signInEmail, isSet: true, redirect: government-gateway-email }
+    next: government-gateway-create-password
+
+  - id: government-gateway-create-password
+    shared: government-gateway
+    guard: { key: governmentGatewayName, isSet: true, redirect: government-gateway-name }
+    next: government-gateway-user-id
+
+  - id: government-gateway-user-id
+    shared: government-gateway
+    guard: { key: governmentGatewayName, isSet: true, redirect: government-gateway-name }
+    handler: custom # mints the user ID and signs in, see app/lib/mock-sign-in.js
+    next: renewal-length
+
+  # Signed in from here on: every page needs the account
+  - id: renewal-length
+    back: sign-in-method
+    guard: { key: account, isSet: true, redirect: sign-in-method }
+    field: renewal-length
+    sessionKey: renewalLength
+    changeable: true
+    next: check-your-answers
+
+  - id: check-your-answers
+    guard: { key: renewalLength, isSet: true, redirect: renewal-length }
+    next: confirmation
+
+  - id: confirmation
+    guard: { key: account, isSet: true, redirect: sign-in-method }

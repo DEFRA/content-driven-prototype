@@ -1,0 +1,77 @@
+# Flow and logic for the example "Review juggling licence applications"
+# journey: an internal service for the staff who run it, using the `staff`
+# layout (a GOV.UK header with the service name, the signed-in officer's
+# account and a menu, and a wider page for tables).
+#
+# `participant: staff` makes the footer's Participant details box speak to
+# the participant, who is the officer: the name and organisation they give
+# replace the officer's in the header.
+
+id: review-juggling-applications
+name: Review juggling licence applications
+serviceName: Review juggling licence applications
+start: sign-in
+layout: staff
+participant: staff
+signedIn: { key: officer, isSet: true }
+
+header:
+  organisation: Juggling Licensing Authority
+  homePage: applications
+  account:
+    - { text: Your account, href: '#' }
+    - { text: Sign out, href: $signOut }
+  menu:
+    links:
+      - { text: Applications, href: applications }
+
+homepage:
+  family: example
+  status: in-progress
+  title: Review juggling licence applications (example staff service)
+  description: >-
+    An internal case-work service on the staff layout: a header with the
+    officer's account and menu, a table of applications, an application
+    record and a decision.
+  changesTitle: What to look at
+  changes:
+    - '`layout: staff` and `header:` in content/review-juggling-applications/journey.yaml'
+    - '`participant: staff`: the Participant details box asks for the participant''s own name and organisation'
+
+session:
+  - officer
+  - decision
+
+preview:
+  data:
+    officer:
+      fullName: Alex Morgan
+    decision: approve
+  signedInFrom:
+    - applications
+
+pages:
+  # A stand-in for the organisation's own sign in: Continue signs the
+  # officer in
+  - id: sign-in
+    back: []
+    next:
+      - goto: applications
+        set: { officer: { fullName: Alex Morgan } }
+
+  - id: applications
+    guard: { key: officer, isSet: true, redirect: sign-in }
+    back: []
+
+  - id: application
+    guard: { key: officer, isSet: true, redirect: sign-in }
+    back: applications
+
+  - id: decision
+    guard: { key: officer, isSet: true, redirect: sign-in }
+    field: decision
+    sessionKey: decision
+    next: decision-recorded
+
+  - id: decision-recorded
+    guard: { key: decision, isSet: true, redirect: decision }

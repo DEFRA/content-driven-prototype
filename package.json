@@ -1,22 +1,42 @@
 {
   "name": "content-driven-prototype",
   "version": "0.1.0",
-  "description": "content-driven-prototype. GOV.UK Prototype Kit with CDP Platform running capabilities",
+  "description": "GOV.UK Prototype Kit with content-driven journeys (pages in markdown, flow in YAML) and tools for user research and design handoff, running on the Core Delivery Platform",
   "author": "Defra DDTS",
   "license": "(OGL-UK-3, MIT) see licenses in /LICENSES",
   "scripts": {
     "dev": "govuk-prototype-kit dev",
     "serve": "govuk-prototype-kit serve",
     "start": "govuk-prototype-kit start",
-    "format": "prettier --write \"**/*.{cjs,js,json,md}\"",
-    "format:check": "prettier --check \"**/*.{cjs,js,json,md}\""
+    "screenshot:journey": "node scripts/export-screens.js",
+    "handoff:manifest": "node scripts/content-history.js",
+    "handoff:tags": "node scripts/handoff-tags.js",
+    "handoff:snapshots": "node scripts/handoff-snapshots.js",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:debug": "playwright test --debug",
+    "format": "prettier --write \"**/*.{cjs,js,mjs,json,md,scss}\"",
+    "format:check": "prettier --check \"**/*.{cjs,js,mjs,json,md,scss}\"",
+    "prepare": "husky || true"
+  },
+  "lint-staged": {
+    "*.{cjs,js,mjs,json,md,scss}": "prettier --check"
   },
   "dependencies": {
-    "@govuk-prototype-kit/common-templates": "3.0.0",
-    "govuk-frontend": "6.5.0",
-    "govuk-prototype-kit": "13.20.4"
+    "@govuk-prototype-kit/common-templates": "3.0.1",
+    "archiver": "7.0.1",
+    "govuk-frontend": "6.6.0",
+    "govuk-prototype-kit": "14.0.1",
+    "js-yaml": "4.3.2",
+    "markdown-it": "14.3.3",
+    "markdown-it-container": "4.0.0",
+    "multer": "2.4.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.57.0",
+    "husky": "9.1.7",
+    "lint-staged": "16.2.5",
     "prettier": "3.9.6"
   }
 }

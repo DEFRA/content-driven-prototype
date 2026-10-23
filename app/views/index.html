@@ -1,20 +1,81 @@
 {% extends "layouts/main.html" %}
 
-{% set pageName="Home" %}
+{#
+  Homepage. Everything below the intro is generated from the journey registry
+  (app/config/shared/journeys.yaml plus every content/<id>/journey.yaml).
+  To add or change a card, edit the YAML, not this template.
+#}
+
+{% set pageName = "Prototypes" %}
+
+{% set statusTags = {
+  "tested": { text: "Tested", colour: "green" },
+  "in-progress": { text: "In progress", colour: "blue" },
+  "spike": { text: "Spike", colour: "purple" },
+  "error": { text: "Error", colour: "red" }
+} %}
 
 {% block content %}
-
 <div class="govuk-grid-row">
   <div class="govuk-grid-column-two-thirds">
+    <h1 class="govuk-heading-xl">{{ serviceName }}</h1>
 
-    {% include "govuk-prototype-kit/includes/homepage-top.njk" %}
-
-    <h1 class="govuk-heading-xl">
-      {{ serviceName }}
-    </h1>
-
-    {% include "govuk-prototype-kit/includes/homepage-bottom.njk" %}
+    <p class="govuk-body">
+      Each card is a user journey in this prototype. Select a journey to start it,
+      or open its tools page to see the flow and every screen at once.
+    </p>
   </div>
 </div>
 
+{% set tabItems = [] %}
+{% for family in families %}
+  {% set panel %}
+    {% if family.versioned %}
+      {% if family.latest %}
+        {% set card = family.latest %}
+        {% set compact = false %}
+        {% include "includes/journey-card.html" %}
+
+        {% if family.previous | length %}
+          {% set previousHtml %}
+            {% for card in family.previous %}
+              {% set compact = true %}
+              {% include "includes/journey-card.html" %}
+              {% if not loop.last %}
+              <hr class="govuk-section-break govuk-section-break--m govuk-section-break--visible">
+              {% endif %}
+            {% endfor %}
+          {% endset %}
+          {{ govukDetails({
+            summaryText: "Previous versions (" + (family.previous | length) + ")",
+            html: previousHtml
+          }) }}
+        {% endif %}
+      {% else %}
+        <p class="govuk-body">No {{ family.label | lower }} journeys yet.</p>
+      {% endif %}
+    {% else %}
+      {% for card in family.all %}
+        {% set compact = false %}
+        {% include "includes/journey-card.html" %}
+        {% if not loop.last %}
+        <hr class="govuk-section-break govuk-section-break--m govuk-section-break--visible">
+        {% endif %}
+      {% else %}
+        <p class="govuk-body">No {{ family.label | lower }} yet.</p>
+      {% endfor %}
+    {% endif %}
+  {% endset %}
+  {% set _ = tabItems.push({
+    label: family.label,
+    id: family.id,
+    panel: { html: panel }
+  }) %}
+{% endfor %}
+
+<div class="govuk-grid-row">
+  <div class="govuk-grid-column-full">
+    {{ govukTabs({ items: tabItems }) }}
+  </div>
+</div>
 {% endblock %}

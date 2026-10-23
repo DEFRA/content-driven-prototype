@@ -1,0 +1,127 @@
+// Styles for the journey engine's page chrome and blocks
+// (app/views/journey-engine/, app/views/includes/one-login-*.html).
+
+// GOV.UK One Login look: the "Test" banner and language toggle sit on one line
+.app-one-login-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: govuk-spacing(2);
+
+  &__phase {
+    flex: 1 1 auto;
+  }
+
+  // Government Gateway: the toggle alone, kept to the right
+  &--toggle-only {
+    justify-content: flex-end;
+  }
+}
+
+.app-language-toggle {
+  margin: govuk-spacing(2) 0 0;
+  white-space: nowrap;
+
+  &__separator {
+    margin: 0 govuk-spacing(1);
+    color: govuk-colour('black', $variant: 'tint-25');
+  }
+}
+
+// "Client name  Change" line for a signed-in account acting for someone
+// else (journey-engine/_signed-in-bar.html)
+.app-organisation-bar {
+  padding: govuk-spacing(2) 0;
+  border-bottom: 1px solid govuk-colour('black', $variant: 'tint-80');
+  margin-bottom: govuk-spacing(3);
+
+  &__change {
+    margin-left: govuk-spacing(3);
+  }
+}
+
+// Sign out sits at the right of the service navigation bar
+.app-service-navigation--signed-in .govuk-service-navigation__container {
+  justify-content: space-between;
+}
+
+// The `:::map` block: a bordered frame holding the SVG of the boundary
+.app-boundary-map {
+  position: relative;
+  width: 100%;
+  max-width: 600px;
+  height: 400px;
+  margin: 0 0 govuk-spacing(6);
+  border: 2px solid govuk-colour('black');
+  background: govuk-colour('black', $variant: 'tint-95');
+  overflow: hidden;
+
+  &__svg,
+  &__canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  // A read-only picture: no panning or zooming
+  &__canvas {
+    pointer-events: none;
+  }
+
+  // The SVG gives way once the map is drawn (boundary-map.js)
+  &__svg[hidden],
+  &__canvas[hidden] {
+    display: none;
+  }
+}
+
+// Emails are read in a mail client, not on GOV.UK, so they use the system
+// sans-serif that Notify emails render in rather than GDS Transport
+.app-email {
+  &,
+  [class^='govuk-'],
+  [class*=' govuk-'] {
+    font-family: Helvetica, Arial, sans-serif;
+  }
+}
+
+// The mock emails end in a plain grey band instead of the GOV.UK footer
+.app-email-footer {
+  padding: govuk-spacing(6) 0;
+  border-top: 1px solid $govuk-border-colour;
+  background: govuk-colour('black', $variant: 'tint-95');
+  font-family: Helvetica, Arial, sans-serif;
+
+  &__text {
+    @include govuk-font($size: 16);
+    margin: 0 0 govuk-spacing(2);
+    font-family: inherit;
+    color: $govuk-secondary-text-colour;
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+  }
+}
+
+// Documents (certificates) print without the site chrome
+@media print {
+  .app-document ~ *,
+  .govuk-header,
+  .govuk-footer,
+  .govuk-service-navigation,
+  .govuk-phase-banner,
+  .govuk-back-link {
+    display: none !important;
+  }
+
+  .app-boundary-map,
+  .govuk-table,
+  .govuk-summary-list__row {
+    break-inside: avoid;
+  }
+}
+
+// Strip above a frozen copy of a handoff (/handoffs/<journey>/<date>/...),
+// see journey-engine/_frozen-banner.html

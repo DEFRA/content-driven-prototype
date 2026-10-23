@@ -1,0 +1,187 @@
+# Flow and logic for the example "Apply for a juggling licence" journey.
+#
+# Copy lives in pages/*.md. This file decides the order of pages, where each
+# answer leads, what is remembered in the session, and which pages need
+# bespoke code (hooks in app/lib/apply-juggling-licence/hooks.js).
+#
+# Conditions are objects: { key: <session key>, <operator>: <value> }.
+# Operators: equals, notEquals, in, notIn, gt, gte, lt, lte, between,
+# truthy, falsy, isSet. Engine values start with $: $navFromSummary,
+# $isChange, $preview. See content/README.md.
+#
+# Copy this folder to start a journey of your own.
+
+id: apply-juggling-licence
+name: Apply for a juggling licence
+serviceName: Apply for a juggling licence
+start: start
+summaryPage: check-your-answers
+
+# Card shown on the homepage. `family` picks the tab, `version` orders it
+# against the other versions in that family. See app/config/shared/journeys.yaml.
+homepage:
+  family: example
+  version: 1
+  status: in-progress
+  title: Apply for a juggling licence (example)
+  description: >-
+    A small journey showing what the journey engine can do: radios with a
+    branch out, checkboxes, a number, a textarea, a form with several fields,
+    check your answers with Change links, a confirmation and the email it sends.
+  changesTitle: What to look at
+  changes:
+    - One markdown file per page in content/apply-juggling-licence/pages/
+    - Order, branching and session keys in content/apply-juggling-licence/journey.yaml
+    - Flow diagram and a live wall of every screen at /tools/journeys/apply-juggling-licence
+    - A file upload (trick-photo), and a copy variant of the "How many balls" question (how-many-balls~b.md)
+    - A hook that makes the application reference (app/lib/apply-juggling-licence/hooks.js)
+
+# Every session key this journey writes. `clears: $session` expands to this.
+session:
+  - ballCount
+  - jugglingObjects
+  - yearsJuggling
+  - bestTrick
+  - trickPhoto
+  - applicantDetails
+  - applicantEmail
+  - applicationReference
+
+# Sample answers used when a page is opened with ?preview=1 and on the
+# screen wall at /tools/journeys/apply-juggling-licence. Only a summary page
+# opened that way writes them to the session, so its Change links work.
+preview:
+  data:
+    ballCount: three-or-more
+    jugglingObjects: [balls, clubs]
+    yearsJuggling: 6
+    bestTrick: A five-ball cascade while riding a unicycle
+    trickPhoto: five-ball-cascade.jpg
+    applicantDetails:
+      fullName: Sam Smith
+      phone: '07700 900000'
+    applicantEmail: sam.smith@example.com
+    applicationReference: JL-123456
+
+# Extra columns on the tools page's Scenarios tab: the sample answer each
+# scenario of these pages gives
+scenarios:
+  columns:
+    - label: Years juggling
+      key: yearsJuggling
+      pages: [years-juggling, check-your-answers]
+
+pages:
+  # `handoff:` is the date a page's design was handed to development. Commit
+  # it and the tools page tags the screen "Ready for dev", and the page gets
+  # a frozen copy at /handoffs/apply-juggling-licence/latest/<page>. See
+  # content/README.md, "Handing pages to development".
+  - id: start
+    handoff: 2026-10-23
+    next: how-many-balls
+
+  - id: how-many-balls
+    handoff: 2026-10-23
+    field: ball-count
+    sessionKey: ballCount
+    changeable: true
+    next:
+      - when: { key: ballCount, equals: none }
+        goto: ineligible
+      - when: { key: $navFromSummary, truthy: true }
+        goto: $summary
+      - goto: juggling-objects
+
+  - id: ineligible
+
+  - id: juggling-objects
+    field: juggling-objects
+    sessionKey: jugglingObjects
+    changeable: true
+    next:
+      - when: { key: $navFromSummary, truthy: true }
+        goto: $summary
+      - goto: years-juggling
+
+  - id: years-juggling
+    field: years-juggling
+    sessionKey: yearsJuggling
+    min: 0
+    max: 100
+    changeable: true
+    # Other states of the screen, on the wall and the Scenarios tab. A live
+    # one opens for real (?_scenario=veteran), so a research participant
+    # can carry on from it
+    preview:
+      variants:
+        - id: veteran
+          label: A veteran juggler
+          description: Starts with 40 years filled in; Continue carries on to the trick question
+          live: true
+          data: { yearsJuggling: 40 }
+    next:
+      - when: { key: $navFromSummary, truthy: true }
+        goto: $summary
+      - goto: best-trick
+
+  - id: best-trick
+    field: best-trick
+    sessionKey: bestTrick
+    changeable: true
+    next:
+      - when: { key: $navFromSummary, truthy: true }
+        goto: $summary
+      - goto: trick-photo
+
+  # The session keeps the file's name, not the file
+  - id: trick-photo
+    field: trick-photo
+    sessionKey: trickPhoto
+    accept: ['.jpg', '.jpeg', '.png']
+    maxSize: 2MB
+    changeable: true
+    next:
+      - when: { key: $navFromSummary, truthy: true }
+        goto: $summary
+      - goto: your-details
+
+  - id: your-details
+    sessionKey: applicantDetails
+    changeable: true
+    next:
+      - when: { key: $navFromSummary, truthy: true }
+        goto: $summary
+      - goto: email-address
+
+  - id: email-address
+    field: email
+    sessionKey: applicantEmail
+    changeable: true
+    next: check-your-answers
+
+  - id: check-your-answers
+    handoff: 2026-10-23
+    guard: { key: applicantEmail, isSet: true, redirect: email-address }
+    preview:
+      label: Experienced juggler
+      description: Every answer given, phone number included
+      variants:
+        - id: beginner
+          label: A beginner with no phone number
+          description: 1 or 2 balls, less than a year, and the phone number left out
+          data:
+            ballCount: one-or-two
+            jugglingObjects: [scarves]
+            yearsJuggling: 0
+            applicantDetails: { fullName: Sam Smith }
+    handler: custom # makes the application reference, see hooks.js
+    next: confirmation
+
+  # User research aid in the footer: the email the application sends
+  - id: confirmation
+    research:
+      - text: View the confirmation email
+        href: confirmation-email
+
+  - id: confirmation-email
+    back: confirmation

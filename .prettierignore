@@ -4,3 +4,8 @@ coverage
 .tmp/
 .env
 migrate.log
+*.html
+test-results/
+playwright-report/
+screenshots/
+app/data/handoffs/

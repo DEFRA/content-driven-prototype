@@ -1,9 +1,99 @@
 //
 // For guidance on how to create routes see:
-// https://prototype-kit.service.gov.uk/docs/create-routes
+// https://prototype-kit.service.gov.uk/create-routes/
 //
 
+// Before any request: sessions are saved whole, so a page loading many
+// files at once never loses one (see the file)
+require('./lib/session-store')
+
+const fs = require('fs')
+const path = require('path')
 const govukPrototypeKit = require('govuk-prototype-kit')
 const router = govukPrototypeKit.requests.setupRouter()
+const { JOURNEYS, setMountedIds } = require('./config/shared/journeys')
+const { createJourneyRouter, watchContent } = require('./lib/journey-engine')
 
-// Add your routes here
+const indexRoutes = require('./routes/index.js')
+const toolsRoutes = require('./routes/tools.js')
+const handoffsRoutes = require('./routes/handoffs.js')
+const researchRoutes = require('./routes/research.js')
+
+// The footer's "Turn errors off/on" link reloads the current page with
+// ?errors=false or ?errors=true (see layouts/main.html). The participant
+// details box returns to the page it was opened on with its query string
+// intact (?preview=1, ?embed=1, an ?error= state), less its own
+// ?participant flag, so a previewed email keeps its sample data
+router.use((req, res, next) => {
+  res.locals.currentPath = req.path
+  const query = new URLSearchParams(req.originalUrl.split('?')[1] || '')
+  query.delete('participant')
+  const rest = query.toString()
+  res.locals.currentUrl = req.path + (rest ? `?${rest}` : '')
+  res.locals.participantHref = `${req.path}?${rest ? `${rest}&` : ''}participant`
+  next()
+})
+
+router.use('/', researchRoutes) // ?participant flag and the participant details box
+router.use('/', indexRoutes)
+router.use('/', toolsRoutes) // Journey flow diagrams and screen walls
+
+const mounted = []
+
+// Hand-coded journeys: every entry in app/config/shared/journeys.yaml has a
+// route file at app/routes/<id>.js (unless it sets `mount: false`).
+JOURNEYS.filter(
+  (journey) => journey.source === 'legacy' && journey.mount
+).forEach((journey) => {
+  try {
+    const routeModule = require(`./routes/${journey.id}.js`)
+    router.use('/', routeModule)
+    mounted.push(journey.id)
+    console.log(`✓ Loaded journey: ${journey.name} (${journey.basePath})`)
+  } catch (error) {
+    console.warn(
+      `⚠ Warning: Could not load route file for journey ${journey.name} (${journey.basePath})`
+    )
+    console.warn(`  Error: ${error.message}`)
+  }
+})
+
+// Content-driven journeys: every content/<id>/journey.yaml is mounted by the
+// journey engine. Bespoke behaviour is picked up from app/lib/<id>/hooks.js
+// when that file exists. Hand-coded journeys mount first so they win on a
+// clash.
+function hooksFor(id) {
+  const file = path.join(__dirname, 'lib', id, 'hooks.js')
+  return fs.existsSync(file) ? require(file) : {}
+}
+
+JOURNEYS.filter(
+  (journey) => journey.source === 'content' && !journey.error
+).forEach((journey) => {
+  try {
+    createJourneyRouter(router, journey.id, hooksFor(journey.id))
+    mounted.push(journey.id)
+    console.log(
+      `✓ Loaded content journey: ${journey.name} (${journey.basePath})`
+    )
+  } catch (error) {
+    console.warn(
+      `⚠ Warning: Could not mount content journey ${journey.id} (${journey.basePath})`
+    )
+    console.warn(`  Error: ${error.message}`)
+  }
+})
+
+// Frozen copies of design handoffs: /handoffs/<journey>/<date>/<page>
+// serves a journey from the content as handed over (see
+// app/lib/journey-engine/snapshots.js). Mounted after the journeys so a
+// journey at that path would still win.
+router.use('/', handoffsRoutes)
+
+setMountedIds(mounted)
+
+// Reload the browser when content/ changes (development only). The kit's own
+// watchers never look at content/; see app/lib/journey-engine/watch.js.
+watchContent()
+
+module.exports = router

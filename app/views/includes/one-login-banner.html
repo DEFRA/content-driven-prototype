@@ -1,0 +1,14 @@
+{#
+  Under the header on the mock GOV.UK One Login pages: the "Test" environment
+  banner One Login shows outside production, with the English | Cymraeg
+  language toggle alongside it. Neither link goes anywhere in the prototype.
+#}
+<div class="app-one-login-banner">
+  {{ govukPhaseBanner({
+    tag: { text: "Test" },
+    text: "This is a test environment",
+    classes: "app-one-login-banner__phase",
+    attributes: { role: "region", "aria-label": "Test environment notice" }
+  }) }}
+  {% include "includes/language-toggle.html" %}
+</div>

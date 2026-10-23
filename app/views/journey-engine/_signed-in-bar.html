@@ -1,0 +1,17 @@
+{#
+  Shown under the phase banner once the journey's `signedIn` condition holds
+  and the signed-in account acts for someone else (an agent acting for a
+  client, say): the account's `actingFor` in bold, with a Change link when
+  the account has a `changeActingFor` page id or path. A journey's hooks set
+  both on the account (see the `account` option in app/lib/mock-sign-in.js).
+#}
+{% if signedIn and account and account.actingFor %}
+<div class="app-organisation-bar">
+  <p class="govuk-body-s govuk-!-margin-bottom-0">
+    <strong>{{ account.actingFor }}</strong>
+    {% if account.changeActingFor %}
+    <a class="govuk-link app-organisation-bar__change" href="{{ account.changeActingFor if account.changeActingFor[0] == '/' else (journey.chromeBasePath or journey.basePath) + '/' + account.changeActingFor }}">Change<span class="govuk-visually-hidden"> who you are acting for</span></a>
+    {% endif %}
+  </p>
+</div>
+{% endif %}

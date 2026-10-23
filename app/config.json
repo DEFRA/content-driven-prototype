@@ -1,8 +1,4 @@
 {
-  "serviceName": "content-driven-prototype",
-  "plugins": {
-    "govuk-frontend": {
-      "rebrand": true
-    }
-  }
+  "serviceName": "Content-driven prototype",
+  "useServiceNavigation": true
 }

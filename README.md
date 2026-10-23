@@ -1,255 +1,124 @@
 # content-driven-prototype
 
-`Node.js` prototype template, using the [GOV.UK Prototype Kit](https://github.com/alphagov/govuk-prototype-kit) and
-the [GOV.UK Frontend](https://github.com/alphagov/govuk-frontend).
+The [GOV.UK Prototype Kit](https://prototype-kit.service.gov.uk/) with content-driven journeys, and tools for user research and design handoff.
 
-> Basically the `GOV.UK Prototype Kit` and `GOV.UK Frontend` wrapped up and provided on the Core Delivery Platform
+- **Pages are markdown, flow is YAML.** Each screen is one `.md` file of copy (heading, hint, options, errors, button); `journey.yaml` says where each answer leads. Content designers edit the copy directly; nothing to build and no restart.
+- **See the whole journey at once.** `/tools/journeys/<id>` draws the flow and shows every screen live, side by side, with error states, copy variants and other states, and exports them all as JPGs.
+- **Try variations.** A `page~b.md` beside a page is another version of its copy, to compare side by side or walk a participant through.
+- **Research aids.** A Participant details box that puts the participant's own name into the prototype, footer shortcuts for the facilitator, scenarios that open a page with answers already given, and a switch to turn validation off.
+- **Mock sign in.** GOV.UK One Login and Government Gateway pages any journey can use.
+- **Design handoff.** Put a date on a page when it's ready to build: it's tagged in git, marked on the tools page, flagged when the copy changes afterwards, and kept as a frozen copy at a link that won't move.
 
-- [Requirements](#requirements)
-  - [Node.js](#nodejs)
-- [GOV.UK Prototype Kit and GOV.UK Frontend](#govuk-prototype-kit-and-govuk-frontend)
-- [Using the refreshed GOV.UK brand](#using-the-refreshed-govuk-brand)
-- [Setting a password](#setting-a-password)
-- [Setting multiple passwords](#setting-multiple-passwords)
-- [Removing the need for a password](#removing-the-need-for-a-password)
-- [Npm scripts](#npm-scripts)
-- [Updating dependencies](#updating-dependencies)
-- [Environment Variables and Secrets](#environment-variables-and-secrets)
-  - [Local development](#local-development)
-  - [Environment Variables on CDP](#environment-variables-on-cdp)
-  - [Environment Variables in the GOV.UK Prototype Kit](#environment-variables-in-the-govuk-prototype-kit)
-  - [Secrets](#secrets)
-- [Creating a secret](#creating-a-secret)
-- [Docker](#docker)
-  - [Development image](#development-image)
-  - [Production image](#production-image)
-  - [Debug docker](#debug-docker)
-- [Licence](#licence)
-  - [About the licence](#about-the-licence)
+It started life in Defra's Nature Restoration Fund prototype and is the same engine with the service-specific parts taken out. It runs on Defra's Core Delivery Platform (CDP), from the CDP prototype template.
 
-## Requirements
+## Getting started
 
-### Node.js
-
-Install [Node.js](http://nodejs.org/) `>= v24` and [npm](https://nodejs.org/) `>= v11`. You will find it easier to use
-the Node Version Manager [nvm](https://github.com/creationix/nvm)
-
-To use the correct version of Node.js for this application, via nvm:
+You need [Node.js 24](https://nodejs.org/) (`nvm use` reads `.nvmrc`).
 
 ```bash
-cd content-driven-prototype
-nvm use
+npm install
+npm run dev
 ```
 
-## GOV.UK Prototype Kit and GOV.UK Frontend
+Open <http://localhost:3000>. The homepage lists three example journeys:
 
-The [GOV.UK Prototype Kit](https://github.com/alphagov/govuk-prototype-kit) is a tool for building interactive
-prototypes that look like pages on GOV.UK, it provides components and styles from the
-[GOV.UK Frontend](https://github.com/alphagov/govuk-frontend). Both are provided by the
-[Government Digital Service (GDS)](https://www.gov.uk/government/organisations/government-digital-service), this
-template provides both tools in a wrapper that runs on the Core Delivery Platform at Defra.
+| Journey                                                                      | Shows                                                                                                                            |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| [Apply for a juggling licence](content/apply-juggling-licence)               | Every question type, a branch out, check your answers, a confirmation and its email, a copy variant, scenarios and handoff dates |
+| [Renew a juggling licence](content/renew-juggling-licence)                   | Signing in with the mock GOV.UK One Login or Government Gateway, signing out, and leaving for another journey                    |
+| [Review juggling licence applications](content/review-juggling-applications) | An internal service on the staff layout                                                                                          |
 
-> [!NOTE]
-> The `GOV.UK Prototype Kit` is built with [express.js](https://expressjs.com/). The `Node.js`
-> applications [cdp-node-frontend-template](https://github.com/DEFRA/cdp-node-frontend-template)
-> and [cdp-node-backend-template](https://github.com/DEFRA/cdp-node-backend-template) at Defra are built with
-> [Hapi.js](https://hapi.dev/)
+Open a journey's tools page from its card to see the flow and every screen.
 
-- For information on the `GOV.UK Prototype Kit` see https://prototype-kit.service.gov.uk/docs/
-- For tutorials on how to use the `GOV.UK Prototype Kit`
-  see https://prototype-kit.service.gov.uk/docs/tutorials-and-guides
-- For help with the underlying `GOV.UK Frontend` see:
-  - https://design-system.service.gov.uk/
-  - https://github.com/alphagov/govuk-frontend
+## Making your own journeys
 
-> [!WARNING]
-> The `content-driven-prototype` is not a production ready application, it is a tool for prototyping. It is not
-> designed to be used in production or to be resilient, secure or performant, nor should it be. It is designed to be
-> used for prototyping ideas and testing them with users. It's a great tool for prototyping GOV web applications.
+**[content/README.md](content/README.md) is the guide**: every page type, block, setting and journey option, with examples. In short:
 
-## Using the refreshed GOV.UK brand
+1. Copy `content/apply-juggling-licence/` to `content/<your-journey>/` and change the `id` and names at the top of `journey.yaml`.
+2. Edit the pages in `pages/` and the flow in `journey.yaml`.
+3. Restart `npm run dev` once, so the new journey mounts. After that every edit shows straight away.
 
-The refreshed GOV.UK brand is available and turned on by default in the `content-driven-prototype`. To turn it
-off simply go to [app/config.json](./app/config.json) and set the `"rebrand"` property to `false`. This will turn off
-the refreshed brand and use the legacy brand instead.
+Change the homepage tabs and the prototype's name in `app/config/shared/journeys.yaml` and `app/config.json`.
 
-```json
-{
-  "plugins": {
-    "govuk-frontend": {
-      "rebrand": true
-    }
-  }
-}
+When you no longer need the examples, delete their folders in `content/` and `app/lib/`, and their specs in `tests/e2e/` (`apply-juggling-licence.spec.js`, `renew-juggling-licence.spec.js`, `review-juggling-applications.spec.js`). The engine's own specs skip once the examples are gone.
+
+You can still make pages the usual Prototype Kit way, in `app/views/` with routes in `app/routes.js`, alongside the content journeys.
+
+### With Claude Code
+
+`CLAUDE.md` tells Claude Code how the prototype works, and `/new-journey <id> <description>` starts a journey from a description or a spec. A hook asks before Claude changes copy in `content/shared/`, which several journeys share.
+
+## Testing with the prototype
+
+- **Participant details**: the footer link on every page asks for the participant's name and organisation, which the prototype then uses wherever it would otherwise make a name up.
+- **Turn errors off**: the footer link lets a participant click through without filling anything in.
+- **Seeing any screen without walking the journey**: add `?preview=1` to a page's URL to see it with sample answers.
+- **Scenarios**: the Scenarios tab on a journey's tools page lists other states of each page; a live scenario opens the page for real, with answers already given.
+- **Copy variants**: `?copy=<name>` shows a page's `~<name>` copy for the rest of the session.
+
+## Tests
+
+```bash
+npm run test:e2e
 ```
 
-## Setting a password
+Playwright checks the app starts, every journey's first page loads, and the engine and tools behave. Tests read the copy from `content/`, so rewording a page never breaks them. See [tests/README.md](tests/README.md).
+
+`npm run format` formats the code; a git hook checks staged files.
+
+## Hosting on CDP
+
+The prototype is deployed from the CDP Portal. Pushing to `main` runs `.github/workflows/publish.yml`, which tags each new design handoff, bakes the handoff history and frozen copies into `app/data/` (a deployed prototype has no `.git` folder to ask), then builds and publishes the image with the CDP build action. Deploy the new version from the Portal.
+
+### Setting a password
 
 > [!CAUTION]
-> Do not commit the `.env` file to GitHub, it is in the `.gitignore` file by default. Sensitive information such as a
-> password can be provided to a prototype via the Secrets page of your prototype in the CDP Portal Frontend
+> Do not commit the `.env` file to GitHub. Give a deployed prototype its password as a secret in the CDP Portal.
 
-Basic authentication is on by default in CDP environments for prototypes. This means you will need to set a password
-for your prototype. You can do this via your prototypes secrets tab in the Portal Frontend. For information on how to do
-this, follow these steps:
+Basic authentication is on by default in CDP environments for prototypes, so a deployed prototype needs a password:
 
-1. Read the **Setting a password** section on https://prototype-kit.service.gov.uk/docs/publishing
-1. Go to the CDP Portal Frontend
-1. Log in
-1. Navigate to your prototype on the services list page
-1. Navigate to your prototypes `Secrets` tab
-1. Add a secret with a name `PASSWORD` and a `value` of your choosing
-1. Re-deploy your prototype for the new secrets to be made available to it
+1. Go to the CDP Portal Frontend and log in
+1. Find the prototype on the services list page and open its `Secrets` tab
+1. Add a secret named `PASSWORD` with a value of your choosing
+1. Re-deploy the prototype so it picks up the secret
 
-## Setting multiple passwords
+For several passwords, see "If you want to create additional passwords" in the kit's [publishing guide](https://prototype-kit.service.gov.uk/docs/publishing) (`PASSWORD_KEYS`). To turn the password off, set `USE_AUTH=false` in the environment.
 
-The `GOV.UK Prototype Kit` has the ability to set up multiple passwords via secrets. For more information on how to do
-this read the **If you want to create additional passwords** section on
-https://prototype-kit.service.gov.uk/docs/publishing. To add a secret to an environment your prototype is running in
-see [Creating a secret](#creating-a-secret)
+### Environment variables and secrets
 
-## Removing the need for a password
+| Type                                | Environment | Where to set them                                                                                                                                             |
+| ----------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Secrets and other variables         | local       | `.env` (copy `.env.template`)                                                                                                                                 |
+| Secrets                             | CDP         | the service's Secrets page in the CDP Portal                                                                                                                  |
+| Non-sensitive environment variables | CDP         | a pull request to [cdp-app-config](https://github.com/DEFRA/cdp-app-config) ([how to](https://github.com/DEFRA/cdp-documentation/blob/main/how-to/config.md)) |
 
-By default, the `GOV.UK Prototype Kit` requires a password has been set on your prototype when it has been deployed to
-an environment. If you would like to turn off this requirement you can do so by setting the following environment
-variable:
+| Variable          | What it does                                                                                                         |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `PASSWORD`        | The password the kit asks for in production                                                                          |
+| `PASSWORD_KEYS`   | Comma-separated keys for several passwords                                                                           |
+| `PUBLIC_BASE_URL` | The prototype's own address, for the tools page's Copy link buttons (defaults to the address the page was opened on) |
+| `REPO_URL`        | Where the repository can be browsed, for links to the copy as handed over (defaults to the git remote)               |
 
-```dotenv
-ENV USE_AUTH=false
-```
+The image sets `USE_HTTPS=false`: CDP ends HTTPS in front of the app.
 
-This can be set in `cdp-app-config` for instructions on how to do so
-read [Environment Variables on CDP](#environment-variables-on-cdp).
+### Docker
 
-## Npm scripts
-
-All available Npm scripts can be seen in [package.json](./package.json)
-To view them in your command line run:
-
-```bash
-npm run
-```
-
-## Updating dependencies
-
-To update dependencies use [npm-check-updates](https://github.com/raineorshine/npm-check-updates):
-
-> The following script is a good start. Check out all the options on
-> the [npm-check-updates](https://github.com/raineorshine/npm-check-updates)
-
-```bash
-ncu --interactive --format group
-```
-
-## Environment Variables and Secrets
-
-Environment variables and Secrets are used to configure your prototype. Where you set them can be seen in the table
-below.
-
-| Type                                                      | Environment | Where to set them                                   |
-| --------------------------------------------------------- | ----------- | --------------------------------------------------- |
-| Sensitive secrets and Non-sensitive environment variables | local       | `.env` file                                         |
-| Sensitive secrets                                         | CDP         | CDP Portal Frontend services secrets page           |
-| Non-sensitive environment variables                       | CDP         | CDP App Config repository by raising a pull request |
-
-### Local development
-
-> [!CAUTION]
-> Do not store passwords in GitHub. Sensitive information such as a password can be provided to a prototype via the
-> secrets page in the CDP Portal Frontend. The `.env` file is for local development only.
-
-To set environment variables and secrets locally copy the [.env.template](./.env.template) file to `.env` and add any
-environment variables or secrets your local environment needs.
-
-### Environment Variables on CDP
-
-When your prototype is running on a CDP environment, E.g. `dev` or `ext-test`. You can set environment variables via a
-GitHub pull request.
-
-To add environment variables read - https://github.com/DEFRA/cdp-documentation/blob/main/how-to/config.md. This will
-guide you to add non-sensitive environment variables to the https://github.com/DEFRA/cdp-app-config repository via a
-pull request.
-
-### Environment Variables in the GOV.UK Prototype Kit
-
-The following environment variables are available in the `GOV.UK Prototype Kit`. For more information see
-their https://prototype-kit.service.gov.uk/docs/ or https://github.com/alphagov/govuk-prototype-kit.
-
-| Name            | Value    | Description                                              |
-| --------------- | -------- | -------------------------------------------------------- |
-| `PASSWORD`      | `string` | Password for basic authentication                        |
-| `PASSWORD_KEYS` | `string` | Comma-separated list of keys for password authentication |
-
-### Secrets
-
-To add sensitive environment variables know as secrets to your prototype. Add them via your prototypes secrets page on
-the CDP Portal.
-
-## Creating a secret
-
-1. Go to the CDP Portal Frontend
-1. Log in
-1. Navigate to your prototype on the services list page
-1. Navigate to your prototypes `Secrets` tab
-1. Add a secret on your chosen environment with a `name` and `value` of your choosing
-1. Re-deploy your prototype for the new secrets to be made available to it
-
-## Docker
-
-For the most part you will not need to be concerned with `docker` when running this prototype. Everything is set up and
-your `docker` will automatically be built, published and pushed when you deploy a new version of your prototype via the
-UI in the CDP Portal.
-
-### Development image
-
-Build:
-
-```bash
-docker build --target development --no-cache --tag content-driven-prototype:development .
-```
-
-Run:
-
-```bash
-docker run -e PORT=3000 -p 3000:3000 content-driven-prototype:development
-```
-
-### Production image
-
-Build:
+You will not usually need Docker: CDP builds the image when you deploy. To look at it locally, build from a checkout where `npm run handoff:manifest` and `npm run handoff:snapshots` have run, so the image has the handoff history:
 
 ```bash
 docker build --no-cache --tag content-driven-prototype .
-```
-
-Run:
-
-> Update the password field to your password
-
-```bash
 docker run -e PASSWORD=beepBoopBeep -e PORT=3000 -p 3000:3000 content-driven-prototype
 ```
 
-### Debug docker
+`docker build --target development --tag content-driven-prototype:development .` builds the development image, and `docker run -it --entrypoint /bin/ash content-driven-prototype` opens a shell in the built one.
 
-To debug issues in docker and to have a look at the built docker container in the same way as when it runs on CDP. You
-can run an interactive shell:
+## Updating
 
-Build:
-
-```bash
-docker build --no-cache --tag content-driven-prototype .
-```
-
-Run:
-
-```bash
-docker run -it --entrypoint /bin/ash content-driven-prototype
-```
+The kit and GOV.UK Frontend are ordinary dependencies: see the kit's [guide to updating](https://prototype-kit.service.gov.uk/update-to-latest-version/). After updating, run `npm run test:e2e`.
 
 ## Licence
 
-THIS INFORMATION IS LICENSED UNDER THE CONDITIONS OF THE OPEN GOVERNMENT LICENCE found at:
+The GOV.UK Prototype Kit is © Crown copyright (Government Digital Service) under the MIT licence. Everything else is © Crown copyright (Defra), licensed under the conditions of the Open Government Licence found at:
 
 <http://www.nationalarchives.gov.uk/doc/open-government-licence/version/3>
 

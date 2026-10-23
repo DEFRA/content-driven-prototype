@@ -1,0 +1,928 @@
+/**
+ * Journey engine: Express router factory
+ *
+ * Mounts one dispatcher under the journey's basePath. Every request re-loads
+ * the definition (cheap, mtime-cached) and resolves the page by path, so copy
+ * edits, rule changes and added or removed pages in content/ all show up
+ * without a restart. Only the basePath and hook routes are fixed at boot.
+ *
+ * Hooks (`app/lib/<journey>/hooks.js`) give a page imperative behaviour:
+ *   hooks[pageId] = {
+ *     routes(router, journey) → { NAME: path }   extra endpoints, run once
+ *     load(ctx)               → { redirect }?     before the page is built, e.g.
+ *                                                 to put data in the session
+ *     get(ctx, model)         → { redirect }?     enrich the render model
+ *     getOnError: true                            run `get` on a failed post's
+ *                                                 page too
+ *     validate(ctx)           → { ok, value | error }
+ *     process(ctx, value)     → { redirect | error }?  after validation
+ *   }
+ * and one for the whole journey:
+ *   hooks.context(ctx)                          on every page, before
+ *                                                 anything else, e.g. to
+ *                                                 derive data the pages
+ *                                                 print (a preview's sample
+ *                                                 answers included)
+ *   hooks.routes(router, journey) → { NAME: path }  extra endpoints that
+ *                                                 belong to no page (the
+ *                                                 sign-out route), run once
+ *   hooks.scenario(ctx)                         after a live scenario has
+ *                                                 put its answers in the
+ *                                                 session (see startScenario),
+ *                                                 e.g. to sign the user in
+ *   hooks.preview(ctx)                          when a page is opened with
+ *                                                 `?preview=1` (not embedded),
+ *                                                 with the session as `data`
+ *                                                 and the sample answers as
+ *                                                 `sample`, so its links and
+ *                                                 buttons can carry on
+ */
+
+const multer = require('multer')
+const { evaluate, firstMatch, isTruthy } = require('./expressions')
+const { validatePage, previewErrors, message } = require('./validation')
+const { previewErrorKey, signedInPages } = require('./flow')
+const { resolveBackLink, toPath, withDetourParams } = require('./back-link')
+const { createRenderer } = require('./markdown')
+const {
+  loadJourney,
+  resolveSummaryPath,
+  isQuestionType,
+  hasCheckAnswersCheckboxes,
+  answerLabels,
+  SUMMARY_TARGET
+} = require('./loader')
+
+// Copy shows a choice's label, not the short value the session stores
+const renderer = createRenderer({ labels: answerLabels })
+
+// Query and hidden-input names the engine uses for control flow. The kit's
+// autoStoreData copies every query param and body field into the session,
+// so these are removed again on every request.
+const ENGINE_KEYS = [
+  'preview',
+  'change',
+  'nav',
+  'error',
+  'variant',
+  'isChange',
+  'navFromSummary'
+]
+
+function scrub(sessionData) {
+  for (const key of ENGINE_KEYS) {
+    delete sessionData[key]
+  }
+}
+
+/**
+ * Sample answers for a page: the journey's `preview.data`, then the page's
+ * own `preview.data` (or a bare `preview:` map of answers), then the named
+ * variant's `data` when `?variant=<id>` is set. Variants show alternative
+ * states of one screen on the wall (an upload that failed, say). A copy
+ * variant with `sample: <id>` uses that variant when none is asked for.
+ */
+function previewData(journey, page, requested) {
+  const variantId =
+    requested || (page.copyVariant && page.copyVariant.sample) || null
+  const base = (journey.preview && journey.preview.data) || {}
+  const pagePreview = page.preview || {}
+  const structured = ['data', 'variants', 'label', 'description'].some(
+    (key) => key in pagePreview
+  )
+  const override = structured ? pagePreview.data || {} : pagePreview
+  const variant = variantId
+    ? (pagePreview.variants || []).find((item) => item.id === variantId)
+    : null
+  const variantData = (variant && variant.data) || {}
+  return JSON.parse(JSON.stringify({ ...base, ...override, ...variantData }))
+}
+
+/**
+ * Whether the header shows the user as signed in: the journey's `signedIn`
+ * condition, on a page that comes after signing in (see signedInPages). A
+ * preview's sample answers always hold an account, and the session keeps
+ * one after a run through the journey (into the next run, other versions
+ * and the frozen handoff copies), so without the page check every page
+ * would show Sign out and who the account acts for.
+ */
+function isSignedIn(chrome, page, ctx) {
+  if (!chrome.signedIn || !evaluate(chrome.signedIn, ctx)) {
+    return false
+  }
+  if (chrome === ctx.journey) {
+    const pages = signedInPages(chrome)
+    return !pages || pages.has(page.id)
+  }
+  return true
+}
+
+/**
+ * `?errors=false` on any page turns validation off for the rest of the
+ * session (the kit keeps every query parameter in session data, so the
+ * flag arrives here as `data.errors`); `?errors=true` turns it back on.
+ */
+function errorsOff(data) {
+  return String(data.errors).toLowerCase() === 'false'
+}
+
+/**
+ * With validation off, whatever was typed is kept and each blank answer is
+ * filled from the journey's sample data, so the pages that follow still
+ * have something to show and their guards still pass.
+ */
+function lenientValue(journey, page, body) {
+  const sample = previewData(journey, page)
+  const stored = page.sessionKey ? sample[page.sessionKey] : undefined
+  if (page.type === 'form') {
+    const value = {}
+    const saved = stored && typeof stored === 'object' ? stored : {}
+    for (const field of page.content.fields || []) {
+      const raw = String(body[field.name] || '').trim()
+      if (raw) {
+        value[field.key] = raw
+      } else if (saved[field.key] !== undefined) {
+        value[field.key] = saved[field.key]
+      }
+    }
+    return value
+  }
+  if (page.type === 'file-upload') {
+    return undefined
+  }
+  const raw = body[page.field]
+  const typed = []
+    .concat(raw === undefined ? [] : raw)
+    .filter((v) => v && v !== '_unchecked' && String(v).trim())
+  if (typed.length) {
+    return page.type === 'checkboxes' || hasCheckAnswersCheckboxes(page)
+      ? typed
+      : String(typed[0]).trim()
+  }
+  return stored
+}
+
+function parseSize(value) {
+  if (!value) {
+    return 2 * 1024 * 1024
+  }
+  if (typeof value === 'number') {
+    return value
+  }
+  const match = String(value).match(/^(\d+(?:\.\d+)?)\s*(kb|mb|gb)?$/i)
+  if (!match) {
+    return 2 * 1024 * 1024
+  }
+  const units = { kb: 1024, mb: 1024 * 1024, gb: 1024 * 1024 * 1024 }
+  return Math.round(
+    parseFloat(match[1]) * (units[(match[2] || 'mb').toLowerCase()] || 1)
+  )
+}
+
+function buildContext(req, res, journey, page, options = {}) {
+  req.session = req.session || {}
+  req.session.data = req.session.data || {}
+  scrub(req.session.data)
+  const query = req.query || {}
+  const body = req.body || {}
+  const preview =
+    !options.isPost && ['1', 'true'].includes(String(query.preview))
+  const isChange = query.change === 'true' || body.isChange === 'true'
+  // The page to return to (`?nav=...` or the hidden input a form carries
+  // forward), or false: the id of a page of this journey (usually a summary
+  // page), or the absolute path of another journey's page when this page
+  // has been borrowed by that journey (a Change link on its summary page
+  // pointing here, or a Delete link whose Cancel comes back). A bare `true`
+  // from an older form means the journey's first summary page. Anything
+  // else is ignored, so `nav` can never redirect outside the mounted
+  // journeys.
+  const nav = query.nav || body.navFromSummary
+  let navFromSummary = false
+  let returnJourney = null
+  if (nav === 'true' && journey.summaryPage) {
+    navFromSummary = journey.summaryPage
+  } else if (nav && journey.byId.has(nav)) {
+    navFromSummary = nav
+  } else if (nav && String(nav).startsWith('/')) {
+    const found = resolveSummaryPath(String(nav))
+    if (found) {
+      navFromSummary = String(nav)
+      returnJourney = found.journey
+    }
+  }
+  return {
+    req,
+    res,
+    journey,
+    page,
+    data: preview
+      ? previewData(journey, page, query.variant)
+      : req.session.data,
+    body,
+    file: req.file,
+    query,
+    preview,
+    // A preview rendered inside something else (the screen wall's iframes,
+    // the JPG export, screenshots): no user research footer
+    embed: preview && ['1', 'true'].includes(String(query.embed)),
+    // `?error=1` shows the page's required error; `?error=<key>` any other
+    // message of its `errors:` block (see previewErrorKey)
+    previewError: preview ? previewErrorKey(query.error) : null,
+    variant: preview && query.variant ? String(query.variant) : null,
+    isChange,
+    navFromSummary,
+    // The journey that borrowed this page, when navFromSummary is a path
+    // into another journey; its header is shown instead of this journey's
+    returnJourney,
+    // `$borrowed` in a condition: this page was opened from another
+    // journey's summary page
+    borrowed: Boolean(returnJourney)
+  }
+}
+
+/**
+ * Append the way back to a URL that leaves for another journey: `nav` is the
+ * absolute path of the summary page to return to, so the borrowed page's
+ * Back link, `$summary` and Cancel all come back here.
+ */
+function withReturn(url, returnTo, journey) {
+  const returnPath = toPath(returnTo, journey)
+  if (!url || !returnPath) {
+    return url
+  }
+  return `${url}${url.includes('?') ? '&' : '?'}nav=${returnPath}`
+}
+
+/**
+ * A change detour (reached from a summary page with ?change=true&nav=...)
+ * that moves on to another page of this journey keeps its way back, so the
+ * detour can chain across several pages before returning. A drop-out page
+ * (one that ends the flow) keeps it too when reached from a Change link, so
+ * its Back link returns to the question still in the detour (see
+ * back-link.js) and a different answer goes back to the summary page.
+ * Summary pages, and pages that end any other flow, are left alone.
+ */
+function withChangeDetour(url, target, ctx) {
+  const { journey } = ctx
+  const continuesFlow = target && target.next && target.next.length > 0
+  if (
+    !url ||
+    !target ||
+    !ctx.navFromSummary ||
+    journey.summaryPages.includes(target.id) ||
+    !(continuesFlow || ctx.isChange)
+  ) {
+    return url
+  }
+  return withDetourParams(url, ctx)
+}
+
+function storedValueFor(page, optionValue) {
+  if (
+    page.store &&
+    Object.prototype.hasOwnProperty.call(page.store, optionValue)
+  ) {
+    return page.store[optionValue]
+  }
+  return optionValue
+}
+
+function isChecked(page, option, data) {
+  const current = data[page.sessionKey]
+  if (current === undefined || current === null || current === '') {
+    return false
+  }
+  const expected = storedValueFor(page, option.value)
+  if (Array.isArray(current)) {
+    return current.some((v) => String(v) === String(expected))
+  }
+  return String(current) === String(expected)
+}
+
+function resolveRow(row, ctx) {
+  const { journey, data, page } = ctx
+  // `- heading: Development details` starts a new group of rows
+  if (row.heading && row.key === undefined) {
+    return {
+      heading: renderer.interpolate(row.heading, data, { escape: false })
+    }
+  }
+  const key = renderer.interpolate(row.key, data, { escape: false })
+  const result = { key: { text: key } }
+  if (row.value && typeof row.value === 'object' && row.value.lines) {
+    // Multi-line value (an address): each line escaped, empties dropped
+    const lines = row.value.lines
+      .map((line) => renderer.interpolate(line, data))
+      .filter((line) => line.trim() !== '')
+    result.value = { html: lines.join('<br>') }
+  } else if (row.value && typeof row.value === 'object') {
+    // `when`/`then`/`else`; an `else` may itself be another rule, so a row
+    // can pick between three or more values
+    let chosen = row.value
+    while (chosen && typeof chosen === 'object') {
+      chosen = evaluate(chosen.when, ctx) ? chosen.then : chosen.else
+    }
+    result.value = {
+      text: renderer.interpolate(chosen || '', data, { escape: false })
+    }
+  } else {
+    result.value = {
+      text: renderer.interpolate(row.value, data, { escape: false })
+    }
+  }
+  let changeTarget
+  if (typeof row.change === 'string') {
+    changeTarget = row.change
+  } else if (Array.isArray(row.change)) {
+    const rule = firstMatch(row.change, ctx)
+    changeTarget = rule ? rule.goto : undefined
+  }
+  if (changeTarget) {
+    const base = toPath(changeTarget, journey)
+    const params = ['change=true']
+    // Come back to this summary page if it is one, else the journey's first.
+    // A page borrowed from another journey needs the full path to find it.
+    const returnTo =
+      page && journey.summaryPages.includes(page.id)
+        ? page.id
+        : journey.summaryPage
+    if (returnTo && changeTarget.startsWith('/')) {
+      params.push(`nav=${toPath(returnTo, journey)}`)
+    } else if (returnTo) {
+      params.push(`nav=${returnTo}`)
+    }
+    result.actions = {
+      items: [
+        {
+          href: `${base}?${params.join('&')}`,
+          text: 'Change',
+          visuallyHiddenText: resolveHiddenText(row.changeHidden, ctx) || key
+        }
+      ]
+    }
+  }
+  return result
+}
+
+/**
+ * `changeHidden` is a string, or `{ when, then, else }` when the hidden text
+ * depends on the answer (an uploaded versus a drawn boundary)
+ */
+function resolveHiddenText(changeHidden, ctx) {
+  if (changeHidden && typeof changeHidden === 'object') {
+    return evaluate(changeHidden.when, ctx)
+      ? changeHidden.then
+      : changeHidden.else
+  }
+  return changeHidden
+}
+
+/**
+ * Split resolved summary rows into groups at each `heading` entry, so a
+ * check-your-answers page can carry several titled summary lists.
+ */
+function groupRows(rows) {
+  const groups = [{ heading: undefined, rows: [] }]
+  for (const row of rows) {
+    if (row.heading !== undefined && row.key === undefined) {
+      groups.push({ heading: row.heading, rows: [] })
+    } else {
+      groups[groups.length - 1].rows.push(row)
+    }
+  }
+  return groups.filter((group) => group.rows.length || group.heading)
+}
+
+function renderContent(page, ctx) {
+  const { data, journey } = ctx
+  const c = page.content
+  const plain = (text) => renderer.interpolate(text, data, { escape: false })
+  // A row with `when` shows only while its condition holds
+  const rows = (c.rows || [])
+    .filter((row) => !row.when || evaluate(row.when, ctx))
+    .map((row) => resolveRow(row, ctx))
+  const body = renderer.renderParts(c.body, ctx)
+  return {
+    title: plain(c.title),
+    heading: plain(c.heading),
+    headingInBody: c.headingInBody,
+    caption: c.caption ? plain(c.caption) : undefined,
+    bodyFirst: c.bodyFirst,
+    hint: c.hint ? plain(c.hint) : undefined,
+    label: c.label ? plain(c.label) : undefined,
+    placeholder: c.placeholder ? plain(c.placeholder) : undefined,
+    html: body.html,
+    // Copy inside `:::after-button`, shown below the button
+    htmlAfter: body.after,
+    button: c.button,
+    inputType: c.inputType,
+    width: c.width,
+    autocomplete: c.autocomplete,
+    spellcheck: c.spellcheck,
+    lines: c.lines,
+    maxLength: c.maxLength,
+    errors: c.errors,
+    // Named strings a custom template renders itself (`text:` frontmatter)
+    text: c.text || {},
+    items: (c.options || []).map((option) => {
+      const item = {
+        text: plain(option.label),
+        value: option.value,
+        checked: isChecked(page, option, data)
+      }
+      if (option.hint) {
+        item.hint = { text: plain(option.hint) }
+      }
+      return item
+    }),
+    fields: (c.fields || []).map((field) => ({
+      ...field,
+      label: plain(field.label),
+      hint: field.hint ? plain(field.hint) : undefined
+    })),
+    rows: rows.filter((row) => row.key),
+    rowGroups: groupRows(rows),
+    // A link action may leave for another journey (`goto: /other/page`)
+    // and carry the way back (`return: <summary page>`); `$summary` works
+    // here too, so a Cancel link returns to whichever summary page the
+    // user came from. A link to a page of this journey keeps a change
+    // detour going ("Enter the address manually" from the postcode page).
+    actions: (c.actions || []).map((action) => ({
+      text: plain(action.text),
+      kind: action.kind || 'submit',
+      href: action.goto
+        ? withReturn(
+            withChangeDetour(
+              toPath(action.goto, journey, ctx),
+              journey.byId.get(action.goto),
+              ctx
+            ),
+            action.return,
+            journey
+          )
+        : undefined,
+      hidden: action.hidden
+    })),
+    panel: c.panel
+      ? {
+          title: plain(c.panel.title),
+          // Inline markdown, so copy can bold the reference as production does
+          bodyHtml: renderer.renderInline(c.panel.body, ctx)
+        }
+      : undefined
+  }
+}
+
+/**
+ * The staff layout's header (`header:` in journey.yaml) with each link's
+ * `href` resolved: a page id becomes its path, `$signOut` the sign-out route
+ * a hook registered, anything else (an absolute path, `#`) stays as written.
+ */
+function resolveHeader(journey) {
+  const header = journey.header || {}
+  const resolve = (link) => {
+    const href = String(link.href || '#')
+    if (href === '$signOut') {
+      return { ...link, href: journey.routes.SIGN_OUT || journey.basePath }
+    }
+    return { ...link, href: toPath(href, journey) || href }
+  }
+  const menu = header.menu || {}
+  return {
+    organisation: header.organisation,
+    homePage: header.homePage ? toPath(header.homePage, journey) : null,
+    account: (header.account || []).map(resolve),
+    menu: {
+      heading: menu.heading,
+      links: (menu.links || []).map(resolve)
+    }
+  }
+}
+
+function buildModel(ctx, extra = {}) {
+  const { journey, page } = ctx
+  // `errors` lists one problem per field (form pages); `error` is the single
+  // message every other question type shows
+  let errors = extra.errors
+  if (!errors && ctx.previewError && page.type === 'form') {
+    errors = previewErrors(page, ctx.previewError)
+  }
+  const error =
+    extra.error ||
+    (errors && errors.length ? errors[0].message : undefined) ||
+    (ctx.previewError ? message(page, ctx.previewError) : undefined)
+  // A page borrowed by another journey (reached from its summary page with
+  // the way back in `nav`) wears that journey's header: its service name and
+  // signed-in state, so the user does not see the service change under them.
+  // Everything else (basePath, hook routes, rules) stays this journey's.
+  const chrome = ctx.returnJourney || journey
+  return {
+    journey: {
+      id: journey.id,
+      basePath: journey.basePath,
+      name: journey.name,
+      // A page can carry its own service name (the shared start page says
+      // "Manage ..." before the journey's own name takes over)
+      serviceName: page.serviceName || chrome.serviceName,
+      // Where the header's own links (Change organisation) point
+      chromeBasePath: chrome.basePath,
+      // The staff layout's account and Menu panels
+      header: resolveHeader(chrome),
+      // What the Participant details box asks for besides the name
+      participant: chrome.participant,
+      summaryPage: journey.summaryPage,
+      summaryPages: journey.summaryPages,
+      start: journey.start
+    },
+    page: {
+      id: page.id,
+      path: page.path,
+      type: page.type,
+      layout: page.layout,
+      field: page.field,
+      sessionKey: page.sessionKey,
+      changeable: page.changeable,
+      accept: page.accept,
+      // User research aids shown in the footer, see loader.js
+      research: page.research || []
+    },
+    data: ctx.data,
+    content: renderContent(page, ctx),
+    backLink: resolveBackLink(page, journey, ctx),
+    error,
+    errors,
+    errorHref: page.field || 'main-content',
+    // The header shows Sign out (and who the account acts for) when the
+    // journey's `signedIn` condition holds
+    signedIn: isSignedIn(chrome, page, ctx),
+    account: ctx.data.account,
+    isChange: ctx.isChange,
+    navFromSummary: ctx.navFromSummary,
+    preview: ctx.preview,
+    embed: ctx.embed,
+    variant: ctx.variant,
+    // The copy variant being shown (`b` for pages/<id>~b.md), or null for
+    // the page's own copy; see copyVariantFor
+    copy: page.copyVariant ? page.copyVariant.id : null,
+    routes: journey.routes,
+    // Set on a frozen copy of a handoff (see snapshots.js): the date, the
+    // commit and where the live page is, for the banner
+    frozen: journey.frozen || null,
+    ...extra
+  }
+}
+
+function saveAndRedirect(req, res, url) {
+  if (req.session && typeof req.session.save === 'function') {
+    req.session.save((err) => {
+      if (err) {
+        console.error('Session save error:', err)
+      }
+      res.redirect(303, url)
+    })
+    return
+  }
+  res.redirect(303, url)
+}
+
+function hasPost(page) {
+  return Boolean(
+    (page.next && page.next.length) ||
+    page.handler === 'custom' ||
+    isQuestionType(page.type)
+  )
+}
+
+const uploads = new Map()
+
+function uploadFor(page) {
+  const key = `${page.field}|${page.maxSize || ''}`
+  if (!uploads.has(key)) {
+    uploads.set(
+      key,
+      multer({
+        storage: multer.memoryStorage(),
+        limits: { fileSize: parseSize(page.maxSize) }
+      })
+    )
+  }
+  return uploads.get(key)
+}
+
+function runUpload(page, req, res) {
+  return new Promise((resolve) => {
+    uploadFor(page).single(page.field)(req, res, (err) => {
+      req.multerError = err
+      resolve()
+    })
+  })
+}
+
+function pageForRequest(journey, basePath, req) {
+  const fullPath = (basePath + req.path).replace(/\/+$/, '') || basePath
+  return journey.pages.find((page) => page.path === fullPath)
+}
+
+/**
+ * A summary page opened with `?preview=1` (from the screen wall, a handoff
+ * link or a link someone shared) keeps its sample answers: they are copied
+ * into the session, so a Change link opens a page that already holds the
+ * answer and comes back to a summary page its guard lets through. No other
+ * page writes them, so the research aids that open a page with sample
+ * answers during a session (a confirmation email, say) leave a participant's
+ * answers alone; nor does an embedded preview (the wall's thumbnails,
+ * screenshots, the export).
+ */
+function keepSampleAnswers(ctx) {
+  const { journey, page, preview, embed, req } = ctx
+  if (preview && !embed && journey.summaryPages.includes(page.id)) {
+    Object.assign(req.session.data, ctx.data)
+  }
+}
+
+async function handleGet(req, res, journey, page, hooks) {
+  const ctx = buildContext(req, res, journey, page)
+  if (typeof hooks.context === 'function') {
+    await hooks.context(ctx)
+  }
+  keepSampleAnswers(ctx)
+  if (ctx.preview && !ctx.embed && typeof hooks.preview === 'function') {
+    await hooks.preview({
+      req,
+      journey,
+      page,
+      data: req.session.data,
+      sample: ctx.data
+    })
+  }
+  if (!ctx.preview && page.guard && !evaluate(page.guard, ctx)) {
+    // A frozen handoff page is linked straight from a story, with no
+    // answers behind it: show it with its sample answers rather than
+    // sending the reader back to sign in
+    if (journey.frozen) {
+      const url = new URL(req.originalUrl, 'http://localhost')
+      url.searchParams.set('preview', '1')
+      return res.redirect(url.pathname + url.search)
+    }
+    return res.redirect(toPath(page.guard.redirect, journey))
+  }
+  const hook = hooks[page.id]
+  if (hook && typeof hook.load === 'function') {
+    const result = await hook.load(ctx)
+    if (result && result.redirect) {
+      return res.redirect(result.redirect)
+    }
+  }
+  const model = buildModel(ctx)
+  if (hook && typeof hook.get === 'function') {
+    const result = await hook.get(ctx, model)
+    if (result && result.redirect) {
+      return res.redirect(result.redirect)
+    }
+  }
+  res.render(page.template, model)
+}
+
+async function handlePost(req, res, journey, page, hooks) {
+  if (page.type === 'file-upload') {
+    await runUpload(page, req, res)
+  }
+  const ctx = buildContext(req, res, journey, page, { isPost: true })
+  if (typeof hooks.context === 'function') {
+    await hooks.context(ctx)
+  }
+  const hook = hooks[page.id] || {}
+  const data = ctx.data
+
+  let result = { ok: true }
+  if (typeof hook.validate === 'function') {
+    result = await hook.validate(ctx)
+  } else if (isQuestionType(page.type) || hasCheckAnswersCheckboxes(page)) {
+    result = validatePage(page, ctx.body, ctx.file, req.multerError)
+  }
+  if (!result.ok) {
+    if (!errorsOff(data)) {
+      const model = buildModel(ctx, {
+        error: result.error,
+        errors: result.errors,
+        values: result.values
+      })
+      // A hook whose `get` shapes the page (which options it offers, say)
+      // can ask for the same on the page showing the error
+      if (hook.getOnError && typeof hook.get === 'function') {
+        await hook.get(ctx, model)
+      }
+      return res.render(page.template, model)
+    }
+    result = { ok: true, value: lenientValue(journey, page, ctx.body) }
+  }
+
+  if (
+    (isQuestionType(page.type) || hasCheckAnswersCheckboxes(page)) &&
+    page.sessionKey &&
+    result.value !== undefined
+  ) {
+    if (page.type === 'file-upload') {
+      data[page.sessionKey] = result.value.originalname
+    } else {
+      data[page.sessionKey] = Array.isArray(result.value)
+        ? result.value.map((v) => storedValueFor(page, v))
+        : storedValueFor(page, result.value)
+    }
+  }
+  if (page.set) {
+    Object.assign(data, page.set)
+  }
+  if (Array.isArray(page.clears)) {
+    for (const key of page.clears) {
+      delete data[key]
+    }
+  }
+
+  if (typeof hook.process === 'function') {
+    const outcome = await hook.process(ctx, result.value)
+    if (outcome && outcome.error) {
+      return res.render(
+        page.template,
+        buildModel(ctx, { error: outcome.error })
+      )
+    }
+    if (outcome && outcome.redirect) {
+      return saveAndRedirect(req, res, outcome.redirect)
+    }
+  }
+
+  const rule = firstMatch(page.next, ctx)
+  if (!rule) {
+    return saveAndRedirect(req, res, page.path)
+  }
+  if (rule.set) {
+    Object.assign(data, rule.set)
+  }
+  // `goto: $summary` returns to the summary page the user came from, which
+  // may be in another journey (an absolute path) when this page is borrowed
+  const gotoId =
+    rule.goto === SUMMARY_TARGET
+      ? ctx.navFromSummary || journey.summaryPage
+      : rule.goto
+  let url = toPath(gotoId, journey) || page.path
+  url = withChangeDetour(url, journey.byId.get(gotoId), ctx)
+  // A rule leaving for another journey may carry the way back
+  url = withReturn(url, rule.return, journey)
+  saveAndRedirect(req, res, url)
+}
+
+/**
+ * Serve one request against a journey definition mounted at `basePath`:
+ * find the page the path names, then GET renders it and POST submits it.
+ * Anything that is not a page of the journey falls through to `next()`.
+ * Shared by the live mount below and the frozen handoff copies
+ * (app/routes/handoffs.js).
+ */
+/**
+ * The page to serve: the page itself, or one of its copy variants
+ * (`pages/<id>~<variant>.md`, see loader.js buildCopyVariants) when the
+ * request asks for one. `?copy=<variant>` asks for the session: the kit
+ * keeps it in session data, so every page that has that variant shows it
+ * until `?copy=default` (or any name no page has). `?_copy=<variant>` asks
+ * for this request only, as the kit never stores a query key starting with
+ * `_`; the tools page uses that so looking at the wall or exporting a
+ * screen never changes what a research session shows. A preview
+ * (`?preview=1`: the wall, compare page and export) shows only the copy its
+ * URL asks for, never the session's, so the page's own card stays its own
+ * copy while a research session runs a variant in the same browser. A
+ * frozen copy of a handoff never varies: the handoff is the confirmed
+ * design.
+ */
+function copyVariantFor(journey, page, req) {
+  if (!page || journey.frozen || !page.copyVariants.length) {
+    return page
+  }
+  const query = req.query || {}
+  const session = (req.session && req.session.data) || {}
+  const preview = ['1', 'true'].includes(String(query.preview))
+  const wanted =
+    query._copy !== undefined
+      ? query._copy
+      : query.copy !== undefined
+        ? query.copy
+        : preview
+          ? null
+          : session.copy
+  const found = wanted
+    ? page.copyVariants.find((variant) => variant.id === String(wanted))
+    : null
+  return found ? found.page : page
+}
+
+/**
+ * `?_scenario=<id>` on a page with a preview variant marked `live: true`
+ * starts that scenario for real, so a research participant can carry on
+ * from it: the journey's answers (its `session:` keys) are cleared, the
+ * variant's own `data` goes into the session, the journey's `scenario`
+ * hook runs (to sign the user in, say) and the page opens without the
+ * query, so reloading it changes nothing. The tools page's Scenarios tab
+ * links these. The kit never stores a query key starting with `_`.
+ */
+async function startScenario(journey, page, hooks, req, res) {
+  const id = (req.query || {})._scenario
+  const variants = (page.preview && page.preview.variants) || []
+  const variant =
+    id === undefined
+      ? null
+      : variants.find(
+          (item) => item && item.live && String(item.id) === String(id)
+        )
+  if (!variant) {
+    return false
+  }
+  req.session = req.session || {}
+  const data = (req.session.data = req.session.data || {})
+  for (const key of journey.session) {
+    delete data[key]
+  }
+  Object.assign(data, JSON.parse(JSON.stringify(variant.data || {})))
+  if (typeof hooks.scenario === 'function') {
+    await hooks.scenario({ req, res, journey, page, data, variant: variant.id })
+  }
+  res.redirect(page.path)
+  return true
+}
+
+async function dispatch(journey, basePath, hooks, req, res, next) {
+  try {
+    const page = copyVariantFor(
+      journey,
+      pageForRequest(journey, basePath, req),
+      req
+    )
+    if (!page) {
+      return next()
+    }
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      if (await startScenario(journey, page, hooks, req, res)) {
+        return
+      }
+      return await handleGet(req, res, journey, page, hooks)
+    }
+    if (req.method === 'POST' && hasPost(page)) {
+      return await handlePost(req, res, journey, page, hooks)
+    }
+    next()
+  } catch (error) {
+    next(error)
+  }
+}
+
+/**
+ * Mount the journey on `router`: hook routes once, then a single dispatcher
+ * under basePath that resolves the page from the current definition on
+ * every request.
+ */
+function createJourneyRouter(router, journeyOrId, hooks = {}) {
+  const journeyId =
+    typeof journeyOrId === 'string' ? journeyOrId : journeyOrId.id
+  const initial = loadJourney(journeyId)
+  const basePath = initial.basePath
+
+  // Hook-provided endpoints (APIs, data files) are registered once, before
+  // the dispatcher, so they take precedence over page paths
+  initial.hookRoutes = initial.hookRoutes || {}
+  // A journey-wide `routes` (the mock sign-in's sign-out route) belongs to
+  // no page
+  if (typeof hooks.routes === 'function') {
+    const extra = hooks.routes(router, initial) || {}
+    Object.assign(initial.hookRoutes, extra)
+    Object.assign(initial.routes, extra)
+  }
+  for (const [pageId, hook] of Object.entries(hooks)) {
+    if (hook && typeof hook.routes === 'function' && initial.byId.has(pageId)) {
+      const extra = hook.routes(router, initial) || {}
+      Object.assign(initial.hookRoutes, extra)
+      Object.assign(initial.routes, extra)
+    }
+  }
+
+  router.use(basePath, (req, res, next) => {
+    let journey
+    try {
+      journey = loadJourney(journeyId)
+    } catch (error) {
+      return next(error)
+    }
+    return dispatch(journey, basePath, hooks, req, res, next)
+  })
+
+  return router
+}
+
+module.exports = {
+  createJourneyRouter,
+  dispatch,
+  copyVariantFor,
+  buildContext,
+  buildModel,
+  renderContent,
+  previewData,
+  isTruthy
+}

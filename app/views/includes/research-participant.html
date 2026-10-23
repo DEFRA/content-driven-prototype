@@ -1,0 +1,90 @@
+{#
+  Participant details: a user research aid on every page (layouts/main.html).
+  The facilitator enters the participant's first and last name and the
+  organisation they work for or act for; the journeys' hooks then use them
+  in place of the prototype's stand-in names (app/routes/research.js,
+  participantOf in app/lib/research.js).
+
+  It opens from the "Participant details" footer link or from `?participant`
+  on any URL (the route sets `participantModal`). It is a native dialog
+  element, styled apart from the service in _research-participant.scss so
+  nobody takes a facilitator's box for part of GOV.UK; research-participant.js
+  opens it as a modal over the page.
+
+  Until it is opened the dialog waits in a template element, out of the
+  page: its "First name" and "Last name" boxes would otherwise sit, hidden,
+  beside the journey's own on the name pages (and in the tests' label
+  lookups). Opened by the flag it is rendered straight into the page, open,
+  so it shows without JavaScript too.
+
+  On a journey for staff (`participant: staff` in its journey.yaml) the
+  participant fills it in themselves, so it speaks to them: the staff header
+  shows their name over their organisation.
+
+  The markup is a macro because it is rendered in one of those two ways.
+  Macros cannot see the template context in this nunjucks, so the
+  participant, the page's URL (query string and all, so a previewed page
+  comes back in preview) and whether it speaks to the participant are
+  passed in.
+#}
+{% macro participantDialog(participant, returnTo, open, forStaff) %}
+<dialog class="app-participant" id="research-participant" aria-labelledby="research-participant-title" data-module="research-participant"{% if open %} open data-open="true"{% endif %}>
+  <form class="app-participant__form" method="post" action="/research/participant" novalidate>
+    <input type="hidden" name="_return" value="{{ returnTo }}">
+    <p class="app-participant__label">User research</p>
+    {% if forStaff %}
+    <h2 class="app-participant__title" id="research-participant-title">Tell us about you</h2>
+    <p class="app-participant__lead">
+      We'll use your name and organisation in this prototype, so it looks more like the service you would use at work.
+      You can leave any box blank.
+    </p>
+    {% else %}
+    <h2 class="app-participant__title" id="research-participant-title">Who is taking part?</h2>
+    <p class="app-participant__lead">
+      The prototype reads these back wherever it would otherwise make a name up,
+      such as account pages and the emails it sends.
+      A blank box keeps the prototype's own stand-in.
+    </p>
+    {% endif %}
+    <div class="app-participant__fields">
+      <div class="app-participant__field">
+        <label class="app-participant__field-label" for="participant-first-name">First name</label>
+        <input class="app-participant__input" id="participant-first-name" name="_first-name" type="text" autocomplete="off" value="{{ participant.firstName or '' }}">
+      </div>
+      <div class="app-participant__field">
+        <label class="app-participant__field-label" for="participant-last-name">Last name</label>
+        <input class="app-participant__input" id="participant-last-name" name="_last-name" type="text" autocomplete="off" value="{{ participant.lastName or '' }}">
+      </div>
+      <div class="app-participant__field app-participant__field--wide">
+        <label class="app-participant__field-label" for="participant-organisation">Organisation</label>
+        {% if forStaff %}
+        <span class="app-participant__hint" id="participant-organisation-hint">The organisation you work for</span>
+        {% else %}
+        <span class="app-participant__hint" id="participant-organisation-hint">The business they work for, or the client they act for</span>
+        {% endif %}
+        <input class="app-participant__input" id="participant-organisation" name="_organisation" type="text" autocomplete="off" aria-describedby="participant-organisation-hint" value="{{ participant.organisation or '' }}">
+      </div>
+    </div>
+    <div class="app-participant__actions">
+      <button class="app-participant__button" type="submit">Use these details</button>
+      <button class="app-participant__button app-participant__button--quiet" type="button" data-participant-close>Not now</button>
+      {% if participant.fullName or participant.organisation %}
+        <button class="app-participant__button app-participant__button--quiet" type="submit" name="_forget" value="true">{{ "Remove my details" if forStaff else "Forget them" }}</button>
+      {% endif %}
+    </div>
+    {% if forStaff %}
+    <p class="app-participant__note">We only use these in this prototype and do not share them with anyone.</p>
+    {% else %}
+    <p class="app-participant__note">Kept for this browser session only. Clear data forgets them too.</p>
+    {% endif %}
+  </form>
+</dialog>
+{% endmacro %}
+{% set participant = data.researchParticipant if data and data.researchParticipant else {} %}
+{% set forStaff = journey and journey.participant == 'staff' %}
+{% if participantModal %}
+  {{ participantDialog(participant, currentUrl or currentPath or '/', true, forStaff) }}
+{% else %}
+  <template id="research-participant-template">{{ participantDialog(participant, currentUrl or currentPath or '/', false, forStaff) }}</template>
+{% endif %}
+<script src="/public/javascripts/research-participant.js"></script>

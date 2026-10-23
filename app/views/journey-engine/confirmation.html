@@ -1,0 +1,18 @@
+{% extends "journey-engine/_page.html" %}
+
+{% block pageBody %}
+{% if content.panel %}
+{{ govukPanel({
+  titleText: content.panel.title,
+  html: content.panel.bodyHtml,
+  classes: "govuk-!-margin-bottom-6"
+}) }}
+{% else %}
+{{ govukPanel({ titleText: content.heading, classes: "govuk-!-margin-bottom-6" }) }}
+{% endif %}
+
+{{ content.html | safe }}
+
+{% include "journey-engine/_actions.html" %}
+{{ content.htmlAfter | safe }}
+{% endblock %}

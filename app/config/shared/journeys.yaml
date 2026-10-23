@@ -1,0 +1,37 @@
+# Journey registry for the homepage and for mounting routes.
+#
+# `families` are the homepage tabs, in order. Versioned families show the
+# highest `version` as the main card and the rest under "Previous versions".
+# Rename them, or add one per service area your prototype covers.
+#
+# `journeys` lists hand-coded journeys only (a route file at
+# app/routes/<id>.js with its own views). Content-driven journeys under
+# content/<id>/journey.yaml are discovered automatically and carry their own
+# card metadata in a `homepage:` block, so they never need an entry here.
+#
+# Keys per hand-coded journey:
+#   id            directory name; basePath is /<id> and the route file is app/routes/<id>.js
+#   family        one of families[].id
+#   version       number used to order versions within a family (highest = latest)
+#   versionLabel  optional label shown on the card (defaults to "V<version>")
+#   variant       optional short caption to tell two versions apart
+#   status        tested | in-progress | spike
+#   name          short name for logs and test titles
+#   title         card heading
+#   description   card body
+#   entryPath     relative to basePath; defaults to /start; '' means the basePath itself
+#   changesTitle  optional heading for the design changes details (default "Design changes")
+#   changes       optional list: plain strings, or { heading, items } groups
+#   mount         optional; false stops app/routes.js requiring app/routes/<id>.js
+
+families:
+  # Unversioned: every journey shows as a card of its own. Drop `versioned:
+  # false` from a family whose journeys are versions of one another.
+  - id: example
+    label: Example
+    versioned: false
+  - id: other
+    label: Other prototypes
+    versioned: false
+
+journeys: []

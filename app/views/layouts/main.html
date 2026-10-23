@@ -1,6 +1,80 @@
 {#
 For guidance on how to use layouts see:
-https://prototype-kit.service.gov.uk/docs/how-to-use-layouts
+https://prototype-kit.service.gov.uk/how-to-use-layouts/
 #}
 
 {% extends "govuk-prototype-kit/layouts/govuk-branded.njk" %}
+
+{#
+  The kit's footer links (Manage your prototype, Clear data) plus a switch
+  for validation: "Turn errors off" reloads the page with ?errors=false,
+  which the kit keeps in session data and the journey engine honours until
+  "Turn errors on" (?errors=true). See README.md, "Testing with the prototype".
+#}
+{% block footer %}
+  {% set errorsOff = data and (data.errors == 'false' or data.errors == false) %}
+  {% set errorsToggle = {
+    href: (currentPath or "/") + ("?errors=true" if errorsOff else "?errors=false"),
+    text: "Turn errors on" if errorsOff else "Turn errors off"
+  } %}
+  {#
+    "Participant details" opens the box in includes/research-participant.html
+    (rendered at the end of the body, below): the participant's name and
+    organisation, which the journeys' hooks use in place of their stand-ins.
+    Without JavaScript the link reloads the page with ?participant instead.
+  #}
+  {% set participantLink = {
+    href: participantHref or ((currentPath or "/") + "?participant"),
+    text: "Participant details",
+    attributes: { "data-participant-open": "true" }
+  } %}
+  {#
+    User research aids: a page's `research:` links in journey.yaml (see
+    app/lib/journey-engine/loader.js) form a "User research" section at the
+    top of the footer, under the crown, styled apart from the service's
+    own links (app/assets/sass/_research-links.scss). A link opens in a
+    new tab so the participant keeps their place, unless the journey says
+    `newTab: false` (one the participant follows instead of the button).
+
+    `?research=false` hides the section for the rest of the session (the kit
+    keeps the flag in session data as `data.research`); `?research=true`
+    shows it again. Embedded previews (`?preview=1&embed=1`: the screen
+    wall's iframes, screenshots and the JPG export) never show it; a page
+    opened from the screen wall (`?preview=1`) does.
+  #}
+  {% set researchHidden = embed or (data and (data.research == 'false' or data.research == false)) %}
+  {% set researchLinks = page.research if page and page.research and not researchHidden else [] %}
+  {% set researchNavigation = [] %}
+  {% if researchLinks | length %}
+    {% set researchItems = [] %}
+    {% for link in researchLinks %}
+      {% if link.newTab %}
+        {% set researchItems = (researchItems.push({
+          href: link.href,
+          text: link.text + " (opens in new tab)",
+          attributes: { target: "_blank", rel: "noopener" }
+        }), researchItems) %}
+      {% else %}
+        {% set researchItems = (researchItems.push({ href: link.href, text: link.text }), researchItems) %}
+      {% endif %}
+    {% endfor %}
+    {% set researchNavigation = [{ title: "User research", items: researchItems }] %}
+  {% endif %}
+  {{ govukFooter({
+    classes: "app-footer--research" if researchLinks | length,
+    navigation: researchNavigation,
+    meta: {
+      items: (footerItems or []).concat([participantLink, errorsToggle]),
+      visuallyHiddenTitle: "Footer links"
+    }
+  }) }}
+{% endblock %}
+
+{# The participant details box, on every page but an embedded preview (the
+   screen wall's iframes, screenshots and the JPG export) #}
+{% block bodyEnd %}
+  {{ super() }}
+  {% if not embed %}
+    {% include "includes/research-participant.html" %}
+  {% endif %}
+{% endblock %}

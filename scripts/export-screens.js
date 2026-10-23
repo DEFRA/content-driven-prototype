@@ -1,0 +1,93 @@
+#!/usr/bin/env node
+/**
+ * Export every screen of a content-driven journey as JPGs.
+ *
+ * Usage:
+ *   npm run screenshot:journey apply-juggling-licence
+ *   npm run screenshot:journey apply-juggling-licence -- --base-url http://localhost:3100
+ *   npm run screenshot:journey apply-juggling-licence -- --mobile
+ *   npm run screenshot:journey apply-juggling-licence -- --no-errors
+ *
+ * The prototype must already be running. Files go to screenshots/<journey>/
+ * (screenshots/<journey>-mobile/ with --mobile, which captures at phone width)
+ * and use the same capture code as the "Export all screens as JPG" button on
+ * /tools/journeys/<journey>. --no-errors skips the error-state capture of
+ * each form, for a quicker export with fewer files.
+ */
+
+const fs = require('fs')
+const path = require('path')
+const {
+  loadJourney,
+  getJourneyIds,
+  captureScreens,
+  VIEWPORTS
+} = require('../app/lib/journey-engine')
+
+function parseArgs(argv) {
+  const options = {
+    baseUrl: 'http://localhost:3000',
+    outDir: 'screenshots',
+    viewport: 'desktop',
+    includeErrors: true
+  }
+  const positional = []
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]
+    if (arg === '--base-url') {
+      options.baseUrl = argv[i + 1]
+      i += 1
+    } else if (arg === '--out') {
+      options.outDir = argv[i + 1]
+      i += 1
+    } else if (arg === '--mobile') {
+      options.viewport = 'mobile'
+    } else if (arg === '--no-errors') {
+      options.includeErrors = false
+    } else {
+      positional.push(arg)
+    }
+  }
+  options.journey = positional[0]
+  return options
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2))
+  if (!options.journey) {
+    console.error(
+      'Usage: npm run screenshot:journey <journey> [-- --base-url <url>] [--out <dir>] [--mobile] [--no-errors]'
+    )
+    console.error(`Journeys: ${getJourneyIds().join(', ')}`)
+    process.exit(1)
+  }
+  const journey = loadJourney(options.journey)
+  const folder =
+    options.viewport === 'desktop'
+      ? journey.id
+      : `${journey.id}-${options.viewport}`
+  const outDir = path.resolve(options.outDir, folder)
+  fs.mkdirSync(outDir, { recursive: true })
+
+  const size = VIEWPORTS[options.viewport]
+  console.log(
+    `Capturing ${journey.name} from ${options.baseUrl} at ${size.width}px wide`
+  )
+  const results = await captureScreens(journey, {
+    baseUrl: options.baseUrl,
+    viewport: options.viewport,
+    includeErrors: options.includeErrors,
+    onProgress: (screen, done, total) => {
+      console.log(`  [${done}/${total}] ${screen.file}`)
+    }
+  })
+  for (const { file, buffer } of results) {
+    fs.writeFileSync(path.join(outDir, file), buffer)
+  }
+  console.log(`Saved ${results.length} files to ${outDir}`)
+}
+
+main().catch((error) => {
+  console.error(error.message)
+  process.exit(1)
+})

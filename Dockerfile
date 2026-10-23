@@ -11,6 +11,10 @@ ENV PORT=${PORT}
 COPY --chown=node:node package*.json ./
 RUN npm install
 COPY --chown=node:node ./app ./app
+# Content-driven journeys (content/<id>/journey.yaml + markdown) are read at
+# runtime. The handoff history and frozen copies the Publish workflow bakes
+# into app/data/ come with ./app
+COPY --chown=node:node ./content ./content
 
 CMD [ "npm", "run", "dev" ]
 
@@ -30,6 +34,7 @@ ENV NODE_ENV=production
 
 COPY --from=development /home/node/package*.json ./
 COPY --from=development /home/node/app ./app/
+COPY --from=development /home/node/content ./content/
 
 RUN npm ci --omit=dev
 

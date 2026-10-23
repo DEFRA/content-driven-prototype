@@ -1,0 +1,693 @@
+/**
+ * Journey engine: markdown → GOV.UK HTML
+ *
+ * Content designers write plain markdown. This module maps it to GOV.UK
+ * Design System classes and adds a small set of fenced directives:
+ *
+ *   :::inset                 → govuk-inset-text
+ *   :::details Summary text  → govuk-details
+ *   :::warning               → govuk-warning-text
+ *   :::panel Title           → govuk-panel--confirmation
+ *   :::button Start now      → start button posting to the current page
+ *   :::notification Title    → govuk-notification-banner
+ *   :::map [key]             → the saved red line boundary drawn on a small
+ *                              map like a planning location plan (key
+ *                              defaults to redlineBoundaryPolygon; a
+ *                              trailing `os` is accepted and ignored)
+ *   :::after-button         → everything inside renders below the page's
+ *                              button (a "Get help" link, a details block)
+ *   :::if key                → conditional block (see expressions.js)
+ *   :::if key equals value
+ *   :::if not key
+ *
+ * A link whose target starts with `./` names a page of the current journey
+ * (`[Create sign in details](./government-gateway-email)`), so a shared page
+ * can point at a sibling without knowing which journey it is mounted in.
+ * `./$next` follows the page's own `next` rules for the current session, so
+ * an email whose link continues the journey (a "Sign in to your account"
+ * link in an email) needs no page names in its copy.
+ *
+ * `{{ key }}` placeholders are substituted after rendering and HTML-escaped.
+ * Supported forms: `{{ a.b }}`, `{{ key | lower }}`, `{{ key or "fallback" }}`,
+ * `{{ key | plural "unit" }}` (the number and the word, "1 unit" or
+ * "120 units"; `plural "person" "people"` for a word that does not add an s).
+ */
+
+const MarkdownIt = require('markdown-it')
+const container = require('markdown-it-container')
+const { evaluate, firstMatch, getPath, isSet } = require('./expressions')
+const { toPath } = require('./back-link')
+
+// A link target that follows the page's `next` rules
+const NEXT_TARGET = './$next'
+
+// Conditional blocks are marked in the rendered HTML with NUL-delimited
+// tokens that applyConditionals() strips out again. NUL never appears in
+// real content, so the markers cannot collide with copy.
+const MARK = '\u0000'
+const IF_OPEN = `${MARK}IF:`
+const IF_CLOSE = `${MARK}ENDIF${MARK}`
+const ifOpen = (keep) => `${IF_OPEN}${keep ? '1' : '0'}${MARK}`
+// Where `:::after-button` starts: renderParts() splits the html here
+const AFTER_MARK = `${MARK}AFTER${MARK}`
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+const FILTERS = {
+  lower: (v) => String(v).toLowerCase(),
+  upper: (v) => String(v).toUpperCase(),
+  capitalize: (v) => {
+    const s = String(v)
+    return s.charAt(0).toUpperCase() + s.slice(1)
+  },
+  plural: (v, one = '', many = `${one}s`) =>
+    `${v} ${Number(v) === 1 ? one : many}`
+}
+
+// A filter's quoted arguments: `plural "person" "people"`. Placeholders are
+// substituted after rendering, so a double quote arrives as &quot;
+const FILTER_ARG = /(?:"|&quot;|')(.*?)(?:"|&quot;|')/g
+
+/**
+ * An answer to a radios or checkboxes question is stored as the option's
+ * `value` (a short name such as `full`); shown back to the user it becomes
+ * the option's label. `labels` maps each such session key to its values'
+ * labels: { planningType: { full: 'Full planning permission', … } }.
+ */
+function toLabel(value, labelsForKey) {
+  if (!labelsForKey) {
+    return value
+  }
+  const one = (v) =>
+    Object.prototype.hasOwnProperty.call(labelsForKey, String(v))
+      ? labelsForKey[String(v)]
+      : v
+  return Array.isArray(value) ? value.map(one) : one(value)
+}
+
+/**
+ * Resolve a single placeholder expression against the data.
+ * Grammar: term ( 'or' term )* ( '|' filter )*
+ * where term is a dotted key or a quoted string.
+ */
+function resolveExpression(expression, data, labels) {
+  const [termsPart, ...filterParts] = expression.split('|').map((s) => s.trim())
+  const terms = termsPart.split(/\s+or\s+/).map((s) => s.trim())
+  let value
+  for (const term of terms) {
+    const quoted = term.match(/^(?:"|&quot;|')(.*)(?:"|&quot;|')$/)
+    value = quoted ? quoted[1] : getPath(data, term)
+    if (isSet(value)) {
+      if (!quoted && labels) {
+        value = toLabel(value, labels[term])
+      }
+      break
+    }
+  }
+  if (!isSet(value)) {
+    return ''
+  }
+  // A checkboxes answer is a list: "Balls, Rings"
+  if (Array.isArray(value)) {
+    value = value.join(', ')
+  }
+  for (const filter of filterParts) {
+    const name = filter.split(/\s/)[0]
+    const args = [...filter.matchAll(FILTER_ARG)].map((m) => m[1])
+    if (FILTERS[name]) {
+      value = FILTERS[name](value, ...args)
+    }
+  }
+  return value
+}
+
+/**
+ * Substitute `{{ ... }}` placeholders in a string. `options.labels` (see
+ * toLabel) shows a choice's label rather than its stored value.
+ */
+function interpolate(text, data, options = {}) {
+  if (text === undefined || text === null) {
+    return ''
+  }
+  const escape = options.escape !== false
+  return String(text).replace(
+    /\{\{\s*([^}]+?)\s*\}\}/g,
+    (match, expression) => {
+      const value = resolveExpression(expression, data || {}, options.labels)
+      return escape ? escapeHtml(value) : String(value)
+    }
+  )
+}
+
+/**
+ * Where the page's `next` rules lead for this session (the target of a
+ * `./$next` link). A rule's `set` is not applied: a link is a GET.
+ */
+function nextPath(ctx) {
+  const page = ctx.page || {}
+  const rule = firstMatch(page.next || [], ctx)
+  return rule ? toPath(rule.goto, ctx.journey, ctx) : null
+}
+
+/**
+ * Parse the params of `:::if` into a condition object.
+ *   `key`                 → { key, truthy: true }
+ *   `not key`             → { key, falsy: true }
+ *   `key equals value`    → { key, equals: value }
+ *   `key notEquals value` → { key, notEquals: value }
+ *   `key gt 10` etc.
+ */
+function parseIfParams(params) {
+  const tokens = params.trim().split(/\s+/)
+  if (tokens[0] === 'not' && tokens.length === 2) {
+    return { key: tokens[1], falsy: true }
+  }
+  if (tokens.length === 1) {
+    return { key: tokens[0], truthy: true }
+  }
+  const [key, op, ...rest] = tokens
+  const raw = rest.join(' ').replace(/^["']|["']$/g, '')
+  if (['in', 'notIn'].includes(op)) {
+    return { [op]: raw.split(',').map((s) => s.trim()), key }
+  }
+  return { key, [op]: raw }
+}
+
+/**
+ * Remove blocks whose `:::if` evaluated false. Handles nesting with a stack.
+ */
+function applyConditionals(html) {
+  let out = ''
+  let i = 0
+  const stack = []
+  while (i < html.length) {
+    const openAt = html.indexOf(IF_OPEN, i)
+    const closeAt = html.indexOf(IF_CLOSE, i)
+    if (openAt === -1 && closeAt === -1) {
+      if (stack.every((keep) => keep)) {
+        out += html.slice(i)
+      }
+      break
+    }
+    const nextAt =
+      openAt === -1
+        ? closeAt
+        : closeAt === -1
+          ? openAt
+          : Math.min(openAt, closeAt)
+    if (stack.every((keep) => keep)) {
+      out += html.slice(i, nextAt)
+    }
+    if (nextAt === openAt) {
+      const end = html.indexOf(MARK, openAt + IF_OPEN.length)
+      const flag = html.slice(openAt + IF_OPEN.length, end)
+      stack.push(flag === '1')
+      i = end + 1
+    } else {
+      stack.pop()
+      i = closeAt + IF_CLOSE.length
+    }
+  }
+  return out
+}
+
+/**
+ * Stitch back together lists that a directive split in two.
+ *
+ * `:::if` (and `:::map`) are block-level containers, so a conditional bullet
+ * inside a list closes the list and opens a new one. Once the conditional
+ * markers are gone the two lists are adjacent and identical, and a reader
+ * sees two bulleted lists where the content designer wrote one. Merge any
+ * run of adjacent lists sharing the same open tag; markdown on its own never
+ * produces those, so nothing else is affected.
+ */
+function mergeAdjacentLists(html) {
+  const pattern = /<(ul|ol)([^>]*)>((?:(?!<\/?\1[\s>])[\s\S])*)<\/\1>\s*<\1\2>/g
+  let out = html
+  let previous
+  do {
+    previous = out
+    out = out.replace(pattern, '<$1$2>$3')
+  } while (out !== previous)
+  return out
+}
+
+const MAP_WIDTH = 600
+const MAP_HEIGHT = 400
+const MAP_PADDING = 0.15
+const BOUNDARY_COLOUR = '#d4351c'
+
+/**
+ * Inline SVG of a boundary ring ([lng, lat] pairs) fitted into a fixed
+ * frame. Longitude is scaled by cos(latitude) so the shape is not squashed.
+ * Serves as the no-JavaScript and print fallback for the `:::map` block; the
+ * client script swaps a real basemap in when the map plugin is available.
+ */
+function boundarySvg(ring) {
+  const lngs = ring.map((p) => p[0])
+  const lats = ring.map((p) => p[1])
+  const west = Math.min(...lngs)
+  const east = Math.max(...lngs)
+  const south = Math.min(...lats)
+  const north = Math.max(...lats)
+  const centreLat = (south + north) / 2
+  const cos = Math.cos((centreLat * Math.PI) / 180) || 1
+  const width = Math.max((east - west) * cos, 1e-9)
+  const height = Math.max(north - south, 1e-9)
+  const scale =
+    Math.min(
+      (MAP_WIDTH * (1 - 2 * MAP_PADDING)) / width,
+      (MAP_HEIGHT * (1 - 2 * MAP_PADDING)) / height
+    ) || 1
+  const offsetX = (MAP_WIDTH - width * scale) / 2
+  const offsetY = (MAP_HEIGHT - height * scale) / 2
+  const points = ring
+    .map(([lng, lat]) => {
+      const x = offsetX + (lng - west) * cos * scale
+      const y = offsetY + (north - lat) * scale
+      return `${x.toFixed(1)},${y.toFixed(1)}`
+    })
+    .join(' ')
+  return (
+    `<svg class="app-boundary-map__svg" viewBox="0 0 ${MAP_WIDTH} ${MAP_HEIGHT}" ` +
+    'role="img" aria-label="Red line boundary of the development" ' +
+    'xmlns="http://www.w3.org/2000/svg">' +
+    `<rect width="${MAP_WIDTH}" height="${MAP_HEIGHT}" fill="#f3f2f1"/>` +
+    `<polygon points="${points}" fill="${BOUNDARY_COLOUR}" fill-opacity="0.3" ` +
+    `stroke="${BOUNDARY_COLOUR}" stroke-width="3" stroke-linejoin="round"/>` +
+    '</svg>'
+  )
+}
+
+/**
+ * `:::map key` → a figure holding the SVG fallback and an empty canvas the
+ * client script (app/assets/javascripts/boundary-map.js) fills with the
+ * Ordnance Survey Black and white basemap (a keyless street map when the
+ * server has no OS key).
+ */
+function renderBoundaryMap(value) {
+  const ring =
+    value && Array.isArray(value.coordinates) ? value.coordinates : []
+  const points = ring.filter(
+    (p) => Array.isArray(p) && p.length >= 2 && p.every(Number.isFinite)
+  )
+  if (points.length < 3) {
+    return '<p class="govuk-body">No red line boundary has been added.</p>\n'
+  }
+  const first = points[0]
+  const last = points[points.length - 1]
+  const closed =
+    first[0] === last[0] && first[1] === last[1] ? points : [...points, first]
+  return (
+    '<figure class="app-boundary-map" data-module="app-boundary-map" ' +
+    `data-coordinates="${escapeHtml(JSON.stringify(closed))}">\n` +
+    `${boundarySvg(closed)}\n` +
+    '<div class="app-boundary-map__canvas" hidden></div>\n' +
+    '</figure>\n'
+  )
+}
+
+const START_ICON =
+  '<svg class="govuk-button__start-icon" xmlns="http://www.w3.org/2000/svg" width="17.5" height="19" viewBox="0 0 33 40" aria-hidden="true" focusable="false"><path fill="currentColor" d="M0 0h13l20 20-20 20H0l20-20z"/></svg>'
+
+function createMarkdown() {
+  const md = new MarkdownIt({ html: false, linkify: false, typographer: false })
+
+  const HEADING_CLASSES = {
+    h1: 'govuk-heading-l',
+    h2: 'govuk-heading-m',
+    h3: 'govuk-heading-s',
+    h4: 'govuk-heading-s',
+    h5: 'govuk-heading-s',
+    h6: 'govuk-heading-s'
+  }
+
+  function addClass(tokens, idx, className) {
+    tokens[idx].attrJoin('class', className)
+  }
+
+  const defaultRender = (tokens, idx, options, env, self) =>
+    self.renderToken(tokens, idx, options)
+
+  md.renderer.rules.heading_open = (tokens, idx, options, env, self) => {
+    addClass(tokens, idx, HEADING_CLASSES[tokens[idx].tag] || 'govuk-heading-s')
+    return defaultRender(tokens, idx, options, env, self)
+  }
+  md.renderer.rules.paragraph_open = (tokens, idx, options, env, self) => {
+    // Warning text is phrasing content inside a <strong>, as in the design
+    // system: no <p> (its default margins push the text off the icon), and
+    // a line break between paragraphs
+    if (env.inWarning) {
+      return env.warningParagraphs++ ? '<br><br>\n' : ''
+    }
+    if (!env.inPanel) {
+      addClass(tokens, idx, 'govuk-body')
+    }
+    return defaultRender(tokens, idx, options, env, self)
+  }
+  md.renderer.rules.paragraph_close = (tokens, idx, options, env, self) =>
+    env.inWarning ? '\n' : defaultRender(tokens, idx, options, env, self)
+  md.renderer.rules.bullet_list_open = (tokens, idx, options, env, self) => {
+    addClass(tokens, idx, 'govuk-list govuk-list--bullet')
+    return defaultRender(tokens, idx, options, env, self)
+  }
+  md.renderer.rules.ordered_list_open = (tokens, idx, options, env, self) => {
+    addClass(tokens, idx, 'govuk-list govuk-list--number')
+    return defaultRender(tokens, idx, options, env, self)
+  }
+  md.renderer.rules.hr = () =>
+    '<hr class="govuk-section-break govuk-section-break--l govuk-section-break--visible">\n'
+  md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+    addClass(tokens, idx, 'govuk-link')
+    // `{{answer}}` in the address is filled in, URL-encoded (markdown-it has
+    // already encoded the braces, so the page's own filling in misses it)
+    const data = (env.ctx && env.ctx.data) || {}
+    const filled = (tokens[idx].attrGet('href') || '').replace(
+      /%7B%7B(.+?)%7D%7D/gi,
+      (match, expression) =>
+        encodeURIComponent(
+          resolveExpression(decodeURIComponent(expression), data)
+        )
+    )
+    tokens[idx].attrSet('href', filled)
+    // `./page-id` is a page of the journey this page is rendered in
+    const href = filled
+    const journey = env.ctx && env.ctx.journey
+    if (href === NEXT_TARGET && journey) {
+      tokens[idx].attrSet(
+        'href',
+        nextPath(env.ctx) || (env.page && env.page.path) || '#'
+      )
+    } else if (href.startsWith('./') && journey && journey.basePath) {
+      tokens[idx].attrSet('href', `${journey.basePath}/${href.slice(2)}`)
+    }
+    const next = tokens[idx + 1]
+    if (
+      next &&
+      next.type === 'text' &&
+      /\(opens in new tab\)\s*$/i.test(next.content)
+    ) {
+      tokens[idx].attrSet('target', '_blank')
+      tokens[idx].attrSet('rel', 'noreferrer noopener')
+    }
+    return defaultRender(tokens, idx, options, env, self)
+  }
+  md.renderer.rules.table_open = (tokens, idx, options, env, self) => {
+    addClass(tokens, idx, 'govuk-table')
+    return defaultRender(tokens, idx, options, env, self)
+  }
+  md.renderer.rules.thead_open = (tokens, idx, options, env, self) => {
+    addClass(tokens, idx, 'govuk-table__head')
+    return defaultRender(tokens, idx, options, env, self)
+  }
+  md.renderer.rules.tbody_open = (tokens, idx, options, env, self) => {
+    addClass(tokens, idx, 'govuk-table__body')
+    return defaultRender(tokens, idx, options, env, self)
+  }
+  md.renderer.rules.tr_open = (tokens, idx, options, env, self) => {
+    addClass(tokens, idx, 'govuk-table__row')
+    return defaultRender(tokens, idx, options, env, self)
+  }
+  // A column aligned right in the markdown (`---:` under its heading) is a
+  // numeric column: the design system's modifier class instead of the
+  // inline style markdown-it would write
+  function numericColumn(tokens, idx, base) {
+    const style = tokens[idx].attrGet('style') || ''
+    if (style.includes('right')) {
+      addClass(tokens, idx, `${base}--numeric`)
+    }
+    tokens[idx].attrSet('style', null)
+    tokens[idx].attrs = tokens[idx].attrs.filter(([name]) => name !== 'style')
+  }
+  md.renderer.rules.th_open = (tokens, idx, options, env, self) => {
+    addClass(tokens, idx, 'govuk-table__header')
+    numericColumn(tokens, idx, 'govuk-table__header')
+    return defaultRender(tokens, idx, options, env, self)
+  }
+  // The first cell of a body row written entirely in bold (`| **Name** |`)
+  // is that row's header: a `th scope="row"`, as the design system's tables
+  // have, rather than a bold `td`
+  // The cell's inline children without the blank text either side (the
+  // padding spaces markdown-it keeps as empty text tokens)
+  function cellChildren(tokens, idx) {
+    const inline = tokens[idx + 1]
+    const children = (inline && inline.children) || []
+    const blank = (child) => child.type === 'text' && !child.content.trim()
+    let start = 0
+    let end = children.length
+    while (start < end && blank(children[start])) {
+      start += 1
+    }
+    while (end > start && blank(children[end - 1])) {
+      end -= 1
+    }
+    return children.slice(start, end)
+  }
+  function isRowHeader(tokens, idx) {
+    const children = cellChildren(tokens, idx)
+    return (
+      tokens[idx - 1] &&
+      tokens[idx - 1].type === 'tr_open' &&
+      children.length > 2 &&
+      children[0].type === 'strong_open' &&
+      children[children.length - 1].type === 'strong_close' &&
+      children.filter((child) => child.type === 'strong_open').length === 1
+    )
+  }
+  md.renderer.rules.td_open = (tokens, idx, options, env, self) => {
+    if (isRowHeader(tokens, idx)) {
+      tokens[idx].tag = 'th'
+      tokens[idx].attrSet('scope', 'row')
+      addClass(tokens, idx, 'govuk-table__header')
+      numericColumn(tokens, idx, 'govuk-table__header')
+      // The bold marks the cell; the header's own weight does the rest
+      tokens[idx + 1].children = cellChildren(tokens, idx).slice(1, -1)
+      tokens[idx + 2].tag = 'th'
+    } else {
+      addClass(tokens, idx, 'govuk-table__cell')
+      numericColumn(tokens, idx, 'govuk-table__cell')
+    }
+    return defaultRender(tokens, idx, options, env, self)
+  }
+
+  function params(token, name) {
+    return token.info.trim().slice(name.length).trim()
+  }
+
+  md.use(container, 'inset', {
+    render: (tokens, idx) =>
+      tokens[idx].nesting === 1
+        ? '<div class="govuk-inset-text">\n'
+        : '</div>\n'
+  })
+
+  md.use(container, 'details', {
+    render: (tokens, idx) => {
+      if (tokens[idx].nesting === 1) {
+        const summary = escapeHtml(params(tokens[idx], 'details'))
+        return (
+          '<details class="govuk-details">\n' +
+          '<summary class="govuk-details__summary">' +
+          `<span class="govuk-details__summary-text">${summary}</span>` +
+          '</summary>\n<div class="govuk-details__text">\n'
+        )
+      }
+      return '</div>\n</details>\n'
+    }
+  })
+
+  md.use(container, 'warning', {
+    render: (tokens, idx, options, env) => {
+      if (tokens[idx].nesting === 1) {
+        env.inWarning = true
+        env.warningParagraphs = 0
+        return (
+          '<div class="govuk-warning-text">\n' +
+          '<span class="govuk-warning-text__icon" aria-hidden="true">!</span>\n' +
+          '<strong class="govuk-warning-text__text">' +
+          '<span class="govuk-visually-hidden">Warning</span>\n'
+        )
+      }
+      env.inWarning = false
+      return '</strong>\n</div>\n'
+    }
+  })
+
+  md.use(container, 'panel', {
+    render: (tokens, idx, options, env) => {
+      if (tokens[idx].nesting === 1) {
+        env.inPanel = true
+        const title = escapeHtml(params(tokens[idx], 'panel'))
+        return (
+          '<div class="govuk-panel govuk-panel--confirmation">\n' +
+          `<h1 class="govuk-panel__title">${title}</h1>\n` +
+          '<div class="govuk-panel__body">\n'
+        )
+      }
+      env.inPanel = false
+      return '</div>\n</div>\n'
+    }
+  })
+
+  md.use(container, 'button', {
+    render: (tokens, idx, options, env) => {
+      if (tokens[idx].nesting === 1) {
+        const text = escapeHtml(params(tokens[idx], 'button') || 'Start now')
+        const action = env.page && env.page.path ? env.page.path : ''
+        return (
+          `<form action="${escapeHtml(action)}" method="post" novalidate>\n` +
+          '<button class="govuk-button govuk-button--start" data-module="govuk-button">' +
+          `${text}${START_ICON}</button>\n</form>\n`
+        )
+      }
+      return ''
+    }
+  })
+
+  md.use(container, 'notification', {
+    render: (tokens, idx) => {
+      if (tokens[idx].nesting === 1) {
+        const title = escapeHtml(
+          params(tokens[idx], 'notification') || 'Important'
+        )
+        return (
+          '<div class="govuk-notification-banner" role="region" ' +
+          'aria-labelledby="govuk-notification-banner-title" ' +
+          'data-module="govuk-notification-banner">\n' +
+          '<div class="govuk-notification-banner__header">\n' +
+          '<h2 class="govuk-notification-banner__title" id="govuk-notification-banner-title">' +
+          `${title}</h2>\n</div>\n` +
+          '<div class="govuk-notification-banner__content">\n'
+        )
+      }
+      return '</div>\n</div>\n'
+    }
+  })
+
+  // The block itself is a marker; renderParts() moves what follows it below
+  // the button
+  md.use(container, 'after-button', {
+    render: (tokens, idx) => (tokens[idx].nesting === 1 ? AFTER_MARK : '')
+  })
+
+  md.use(container, 'map', {
+    render: (tokens, idx, options, env) => {
+      if (tokens[idx].nesting === 1) {
+        // A word after the key (the `os` older pages give) is ignored: every
+        // map uses the same basemap
+        const [key = 'redlineBoundaryPolygon'] = (
+          params(tokens[idx], 'map') || ''
+        )
+          .split(/\s+/)
+          .filter(Boolean)
+        const data = (env.ctx && env.ctx.data) || {}
+        // Anything written between the fences is dropped: the block is the map
+        return `${renderBoundaryMap(getPath(data, key))}${ifOpen(false)}`
+      }
+      return IF_CLOSE
+    }
+  })
+
+  md.use(container, 'if', {
+    render: (tokens, idx, options, env) => {
+      if (tokens[idx].nesting === 1) {
+        const condition = parseIfParams(params(tokens[idx], 'if'))
+        const keep = evaluate(condition, env.ctx || {})
+        return ifOpen(keep)
+      }
+      return IF_CLOSE
+    }
+  })
+
+  return md
+}
+
+/**
+ * Split off the leading ATX H1 as the page heading. Only an H1 that is the
+ * first non-blank line counts; an H1 further down stays in the body so a
+ * page can put something (an inset, say) above its heading. Returns
+ * { heading: 'text' | null, body: 'markdown without that heading' }.
+ */
+function extractHeading(markdown) {
+  const lines = String(markdown || '').split('\n')
+  const index = lines.findIndex((line) => line.trim() !== '')
+  if (index === -1 || !/^#\s+\S/.test(lines[index])) {
+    return { heading: null, body: lines.join('\n') }
+  }
+  const heading = lines[index].replace(/^#\s+/, '').trim()
+  lines.splice(index, 1)
+  return { heading, body: lines.join('\n') }
+}
+
+/**
+ * A renderer for page copy. `options.labels` is a function returning the
+ * option labels of every choice answer (see toLabel), read afresh on each
+ * render so edits to the page files show up without a restart.
+ */
+function createRenderer(options = {}) {
+  const md = createMarkdown()
+  const labels = () => (options.labels ? options.labels() : undefined)
+
+  function fill(text, data, more = {}) {
+    return interpolate(text, data, { labels: labels(), ...more })
+  }
+
+  /**
+   * Render markdown to GOV.UK HTML.
+   * ctx: { data, page, isChange, navFromSummary, preview }
+   */
+  function render(markdown, ctx = {}) {
+    if (!markdown || !String(markdown).trim()) {
+      return ''
+    }
+    const env = { ctx, page: ctx.page, inPanel: false }
+    const html = md.render(String(markdown), env)
+    return fill(mergeAdjacentLists(applyConditionals(html)), ctx.data)
+  }
+
+  /**
+   * Render markdown split at `:::after-button`: `html` goes where the body
+   * usually does, `after` below the page's button.
+   */
+  function renderParts(markdown, ctx = {}) {
+    const [html, ...rest] = render(markdown, ctx).split(AFTER_MARK)
+    return { html, after: rest.join('') }
+  }
+
+  /**
+   * Render a one-line markdown string (bold, links) without a wrapping <p>.
+   */
+  function renderInline(markdown, ctx = {}) {
+    if (!markdown) {
+      return ''
+    }
+    const env = { ctx, page: ctx.page }
+    return fill(md.renderInline(String(markdown), env), ctx.data)
+  }
+
+  return {
+    render,
+    renderParts,
+    renderInline,
+    interpolate: fill,
+    extractHeading
+  }
+}
+
+module.exports = {
+  createRenderer,
+  createMarkdown,
+  applyConditionals,
+  mergeAdjacentLists,
+  interpolate,
+  extractHeading,
+  escapeHtml,
+  parseIfParams
+}
