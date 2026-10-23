@@ -255,3 +255,15 @@ CDP's platform files:
   once. CI's format check still catches unformatted code.
 - **Node 24**: the engine and tests were built on Node 24.14 locally, so
   this matches what was tested. Kit 14 needs 22 or later.
+- **Fixed: `npm ci` failed in CI and would have broken the CDP image
+  build.** Kit 14 bundles its own dependencies, including one prebuilt
+  `@parcel/watcher` (Linux x64). `npm ci` then expects lockfile entries for
+  the other platforms' builds. A from-scratch `npm install` (npm 11.11)
+  doesn't write them, so the lockfile it produces fails `npm ci` with
+  "Missing: @parcel/watcher-…@2.6.0 from lock file". This hit the first
+  push: CDP's kit 13 lockfile, upgraded in place, had the same gap. The
+  lockfile written by kit 14's own `create` (which installs from an empty
+  `package.json`) has the entries, so it's now the base, updated in place.
+  **Don't delete `package-lock.json` to regenerate it**: update it with
+  `npm install <package>@<version>`, then check `npm ci` in a clean copy.
+  Probably worth reporting to the kit.
